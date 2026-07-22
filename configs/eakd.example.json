@@ -5,17 +5,25 @@
   "allowed_uids": [1000],
   "prefixes": [
     {
-      "keys": ["LOGO", "T"],
+      "keys": ["LOGO", "A"],
       "bindings": [
-        {"keys": ["1"], "action": "terminal.one"},
-        {"keys": ["2"], "action": "terminal.two"},
-        {"keys": ["SHIFT", "1"], "action": "terminal.special"}
+        {"keys": ["T"], "action": "activate-terminal"},
+        {"keys": ["B"], "action": "activate-browser"},
+        {"keys": ["E"], "action": "activate-editor"},
+        {"keys": ["F"], "action": "activate-fileman"},
+        {"keys": ["S"], "action": "activate-steam"},
+        {"keys": ["SHIFT", "T"], "action": "activate-terminal-special"}
       ]
     },
     {
-      "keys": ["LOGO", "A"],
+      "keys": ["LOGO", "T"],
       "bindings": [
-        {"keys": ["M"], "action": "audio.toggle-mute"}
+        {"keys": ["1"], "action": "tile-1"},
+        {"keys": ["2"], "action": "tile-2"},
+        {"keys": ["3"], "action": "tile-3"},
+        {"keys": ["4"], "action": "tile-4"},
+        {"keys": ["5"], "action": "tile-5"},
+        {"keys": ["0"], "action": "tile-0"}
       ]
     }
   ]

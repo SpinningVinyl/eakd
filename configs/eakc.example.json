@@ -3,21 +3,53 @@
   "max_parallel": 4,
   "queue_size": 64,
   "actions": {
-    "terminal.one": {
+    "activate-terminal": {
       "type": "exec",
-      "command": ["/usr/bin/foot", "--title", "terminal one"]
+      "command": ["konsole"]
     },
-    "terminal.two": {
+    "activate-browser": {
       "type": "exec",
-      "command": ["/usr/bin/foot", "--title", "terminal two"]
+      "command": ["firefox"]
     },
-    "terminal.special": {
+    "activate-editor": {
+      "type": "exec",
+      "command": ["emacs"]
+    },
+    "activate-fileman": {
+      "type": "exec",
+      "command": ["dolphin"]
+    },
+    "activate-steam": {
+      "type": "exec",
+      "command": ["steam"]
+    },
+    "activate-terminal-special": {
       "type": "shell",
       "script": "notify-send 'EAK' 'special terminal action'"
     },
-    "audio.toggle-mute": {
+    "tile-1": {
       "type": "exec",
-      "command": ["/usr/bin/wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]
+      "command": ["kwin-tile", "1"]
+    },
+    "tile-2": {
+      "type": "exec",
+      "command": ["kwin-tile", "2"]
+    },
+    "tile-3": {
+      "type": "exec",
+      "command": ["kwin-tile", "3"]
+    },
+    "tile-4": {
+      "type": "exec",
+      "command": ["kwin-tile", "4"]
+    },
+    "tile-5": {
+      "type": "exec",
+      "command": ["kwin-tile", "5"]
+    },
+    "tile-0": {
+      "type": "exec",
+      "command": ["kwin-tile", "0"]
     }
   }
 }
