@@ -1,15 +1,17 @@
 # EAKD/EAKC
 
-EAK is an environment-agnostic, Linux keyboard sequence dispatcher. `eakd` is
-the privileged input broker; `eakc` is a per-user client that receives opaque
-action IDs and runs the commands configured for that user. It never receives
-raw keyboard events.
+EAKD/EAKC is an environment-agnostic solution for managing hotkeys in Linux.
+`eakd` serves as the privileged input broker; `eakc` is the user-side client.
+Both need to be installed and running for mapped actions to execute.
 
-`eakd` grabs idle physical keyboard evdev nodes, exposes one virtual keyboard
-through uinput, forwards ordinary input, and consumes configured prefix
-sequences such as `Logo+T, 1`. Udev notifications discover hotplugged devices
-immediately. If a newly discovered keyboard has held keys, its exclusive
-handoff is postponed until all keys are released.
+`eakd` grabs eligible idle physical keyboard evdev nodes and exposes
+a virtual keyboard through uinput. The virtual keyboard is used to forward
+ordinary input to the userspace input stack. It consumes configured Emacs-style
+key sequences such as `Logo+T, 1`. These sequences generate actions that are
+sent to connected authorised clients. The client executes programs or runs
+shell scripts configured for specific action IDs. It never receives raw
+keyboard events from `eakd` to make sure that it doesn't accidentally turn
+into a universal keylogger.
 
 The active display or input stack, such as a Wayland compositor, the Xorg
 server, or the Linux virtual console, is authoritative for Caps Lock, Num Lock,
@@ -155,6 +157,15 @@ The installed `72-eak-input.rules` name is significant: the rule must set the
 `input` group permissions after the standard `70-uaccess.rules` matching rules
 and before `73-seat-late.rules` applies device ACLs.
 
+### Distribution-specific udev ACLs
+
+Linux distributions do not all ship the same udev rules. Distribution or local
+rules may tag input devices for `uaccess` or otherwise grant device ACLs to the
+logged-in user, independently of the group and mode set by EAK's rule. Users
+are encouraged to research their distribution's input-device policy and inspect
+the effective udev rules and ACLs on `/dev/input/event*` before relying on EAK's
+access boundary.
+
 Do not add desktop users to the `input` group. Membership permits unrestricted
 keyboard monitoring. The dedicated `eakd` account should be the only
 non-root member.
@@ -177,3 +188,9 @@ implemented yet.
 
 See `docs/eakd-design.md` for the state machine, syscall-level design, failure
 behavior, and source map.
+
+## License
+
+EAKD/EAKC is licensed under the GNU General Public License, version 2 or (at
+your option) any later version (`GPL-2.0-or-later`). See [LICENSE](LICENSE) for
+the full license text.
