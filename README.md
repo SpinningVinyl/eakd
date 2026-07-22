@@ -15,26 +15,40 @@ The compositor is authoritative for Caps Lock, Num Lock, and Scroll Lock.
 `eakd` mirrors the compositor's `EV_LED` feedback to every connected keyboard
 that exposes the corresponding LED; it never infers lock state from raw keys.
 
-## Build and test
+## Build and install
 
 ```sh
-make build
 make test
 make vet
+sudo make install
 ```
 
-The binaries are written to `bin/eakd` and `bin/eakc`. The broker's evdev and
-uinput implementation has been audited for Linux amd64 and arm64 ioctl
-encoding and refuses to start on other architectures.
+`make install` builds and installs both binaries, the system and user systemd
+units, the sysusers and modules-load configurations, the udev rule, and example
+configurations. It then creates the `eakd` system account, loads uinput, reloads
+the udev rules, and reloads the systemd manager. It does not enable or start
+either service. An existing `/etc/eak/eakd.json` is preserved.
+
+The default installation prefix is `/usr`. Packagers can stage the installation
+with `DESTDIR`; host-side setup commands are skipped when `DESTDIR` is
+non-empty. For example:
+
+```sh
+make install DESTDIR=/tmp/eak-package-root PREFIX=/usr
+```
+
+The broker's evdev and uinput implementation has been audited for Linux amd64
+and arm64 ioctl encoding and refuses to start on other architectures.
 
 ## Configuration
 
-Copy `configs/eakd.example.json` to `/etc/eak/eakd.json`, make it owned by
-root, and replace `allowed_uids` with the UID that will run `eakc`:
+On the first installation, `make install` creates `/etc/eak/eakd.json` from the
+example configuration. Replace `allowed_uids` with the UID that will run
+`eakc`, adjust the bindings, validate the file, and enable the broker:
 
 ```sh
-sudo install -D -o root -g root -m 0644 configs/eakd.example.json /etc/eak/eakd.json
 sudo /usr/libexec/eakd -config /etc/eak/eakd.json -check
+sudo systemctl enable --now eakd.service
 ```
 
 `CTRL`, `SHIFT`, `ALT`, and `LOGO` match either side. Letters, digits, F1-F12,
@@ -49,12 +63,12 @@ The broker configuration must be root-owned and not group- or world-writable.
 
 ### Installing eakc
 
-Run the following commands from the repository root after `make build`:
+The executable, user unit, and example configuration are installed by
+`sudo make install`. Each participating desktop user should copy and validate
+their own configuration:
 
 ```sh
-sudo install -D -m 0755 bin/eakc /usr/bin/eakc
-sudo install -D -m 0644 packaging/eakc.service /usr/lib/systemd/user/eakc.service
-install -D -m 0600 configs/eakc.example.json "$HOME/.config/eak/eakc.json"
+install -D -m 0600 /usr/share/doc/eak/eakc.example.json "$HOME/.config/eak/eakc.json"
 
 /usr/bin/eakc -config "$HOME/.config/eak/eakc.json" -check
 ```
@@ -125,21 +139,11 @@ The eakc configuration executes code with the user's privileges. It must be a
 regular file owned by that user and must not be group- or world-writable.
 `-allow-insecure-config` is available only for development.
 
-## Installation outline
+## System access
 
-1. Install `bin/eakd` as `/usr/libexec/eakd`.
-2. Install `packaging/eakd.sysusers` under `/usr/lib/sysusers.d/eakd.conf` and
-   run `systemd-sysusers`.
-3. Install `packaging/eakd.modules-load` under
-   `/usr/lib/modules-load.d/eakd.conf` so `/dev/uinput` exists after boot.
-4. Install `packaging/72-eak-input.rules` as
-   `/usr/lib/udev/rules.d/72-eak-input.rules`, reload udev rules, and retrigger
-   input devices. Keep the `72-` prefix: the rule must set the `input` group
-   permissions after the standard `70-uaccess.rules` matching rules and before
-   `73-seat-late.rules` applies device ACLs.
-5. Install the configuration under `/etc/eak/eakd.json`.
-6. Install `packaging/eakd.service` under `/usr/lib/systemd/system/` and enable
-   it.
+The installed `72-eak-input.rules` name is significant: the rule must set the
+`input` group permissions after the standard `70-uaccess.rules` matching rules
+and before `73-seat-late.rules` applies device ACLs.
 
 Do not add desktop users to the `input` group. Membership permits unrestricted
 keyboard monitoring. The dedicated `eakd` account should be the only
