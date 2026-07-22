@@ -1,0 +1,14 @@
+[Unit]
+Description=Environment-Agnostic hotKey action client
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/eakc
+Restart=on-failure
+RestartSec=1s
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=graphical-session.target

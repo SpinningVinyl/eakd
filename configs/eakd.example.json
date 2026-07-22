@@ -1,0 +1,22 @@
+{
+  "candidate_timeout": "750ms",
+  "sequence_timeout": "750ms",
+  "socket_path": "/run/eak/eakd.sock",
+  "allowed_uids": [1000],
+  "prefixes": [
+    {
+      "keys": ["LOGO", "T"],
+      "bindings": [
+        {"keys": ["1"], "action": "terminal.one"},
+        {"keys": ["2"], "action": "terminal.two"},
+        {"keys": ["SHIFT", "1"], "action": "terminal.special"}
+      ]
+    },
+    {
+      "keys": ["LOGO", "A"],
+      "bindings": [
+        {"keys": ["M"], "action": "audio.toggle-mute"}
+      ]
+    }
+  ]
+}

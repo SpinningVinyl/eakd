@@ -1,0 +1,23 @@
+{
+  "socket_path": "/run/eak/eakd.sock",
+  "max_parallel": 4,
+  "queue_size": 64,
+  "actions": {
+    "terminal.one": {
+      "type": "exec",
+      "command": ["/usr/bin/foot", "--title", "terminal one"]
+    },
+    "terminal.two": {
+      "type": "exec",
+      "command": ["/usr/bin/foot", "--title", "terminal two"]
+    },
+    "terminal.special": {
+      "type": "shell",
+      "script": "notify-send 'EAK' 'special terminal action'"
+    },
+    "audio.toggle-mute": {
+      "type": "exec",
+      "command": ["/usr/bin/wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]
+    }
+  }
+}

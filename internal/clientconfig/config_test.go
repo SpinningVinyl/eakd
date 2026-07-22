@@ -1,0 +1,43 @@
+package clientconfig
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestLoadClientConfiguration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "eakc.json")
+	data := []byte(`{
+  "actions": {
+    "terminal.one": {"type": "exec", "command": ["/usr/bin/foot", "--title", "one"]},
+    "audio.toggle": {"type": "shell", "script": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"}
+  }
+}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SocketPath != defaultSocketPath || cfg.MaxParallel != defaultMaxParallel || cfg.QueueSize != defaultQueueSize {
+		t.Fatalf("defaults not applied: %#v", cfg)
+	}
+	if got := cfg.Actions["terminal.one"].Command; len(got) != 3 || got[0] != "/usr/bin/foot" {
+		t.Fatalf("unexpected exec action: %#v", got)
+	}
+}
+
+func TestCompileRejectsAmbiguousActionForms(t *testing.T) {
+	tests := []File{
+		{Actions: map[string]FileAction{"bad": {Type: "exec", Command: []string{"true"}, Script: "true"}}},
+		{Actions: map[string]FileAction{"bad": {Type: "shell", Script: ""}}},
+		{Actions: map[string]FileAction{"bad": {Type: "native"}}},
+	}
+	for _, raw := range tests {
+		if _, err := compile(raw); err == nil {
+			t.Fatalf("accepted invalid configuration: %#v", raw)
+		}
+	}
+}
