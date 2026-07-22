@@ -106,6 +106,9 @@ func compile(raw File) (Config, error) {
 		SocketPath:       raw.SocketPath,
 		AllowedUIDs:      append([]uint32(nil), raw.AllowedUIDs...),
 	}
+	if len(cfg.AllowedUIDs) == 0 {
+		return Config{}, fmt.Errorf("allowed_uids must contain at least one eakc user")
+	}
 	if cfg.SocketPath == "" {
 		cfg.SocketPath = "/run/eak/eakd.sock"
 	}

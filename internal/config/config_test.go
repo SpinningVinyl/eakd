@@ -28,6 +28,32 @@ func TestLoadAndCompile(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsMissingOrEmptyAllowedUIDs(t *testing.T) {
+	tests := map[string]string{
+		"missing": "",
+		"empty":   `"allowed_uids": [],`,
+	}
+	for name, allowedUIDs := range tests {
+		t.Run(name, func(t *testing.T) {
+			directory := t.TempDir()
+			path := filepath.Join(directory, "eakd.json")
+			data := []byte(`{
+  ` + allowedUIDs + `
+  "prefixes": [{
+    "keys": ["LOGO", "T"],
+    "bindings": [{"keys": ["1"], "action": "terminal.one"}]
+  }]
+}`)
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(path, true); err == nil {
+				t.Fatal("Load accepted configuration without an allowed UID")
+			}
+		})
+	}
+}
+
 func TestLockKeysMayBeConsumedBySequences(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "eakd.json")
