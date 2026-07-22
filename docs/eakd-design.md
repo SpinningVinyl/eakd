@@ -24,14 +24,14 @@ turn the broker back into a keylogging oracle.
    action publication.
 
 Creating the virtual device before grabbing physical devices avoids a period
-where no compositor-visible keyboard exists.
+where no keyboard is visible to the active display or input stack.
 
 The supplied unit uses `Type=notify` and orders `eakd` before
 `display-manager.service`. The daemon sends `READY=1` only after the action
 socket has been created with its final permissions, the virtual keyboard
 exists, the udev monitor is subscribed, and initial enumeration is complete.
-A keyboard with held keys remains compositor-owned and may still be awaiting
-handoff when readiness is announced.
+A keyboard with held keys remains on its original input path and may still be
+awaiting handoff when readiness is announced.
 
 The manager subscribes to netlink before initial enumeration so a hotplug event
 racing with the glob cannot be missed. Enumerated nodes are identified by their
@@ -46,11 +46,11 @@ non-exclusively and queried with `EVIOCGKEY`.
 Failure to read or parse a sequence floor aborts startup before readiness is
 reported, because continuing would leave an existing keyboard unmanaged.
 While any key is held, the manager leaves it ungrabbed, allowing the entire
-press/release sequence to remain on the physical device as seen by the
-compositor. Once it is idle, the manager discards its private pre-grab event
-queue, verifies the state is still idle, calls `EVIOCGRAB`, and registers the
-descriptor with epoll. Failed state queries or acquisition steps close and
-defensively ungrab the descriptor and are retried.
+press/release sequence to remain on the physical device as seen by the active
+display or input stack. Once it is idle, the manager discards its private
+pre-grab event queue, verifies the state is still idle, calls `EVIOCGRAB`, and
+registers the descriptor with epoll. Failed state queries or acquisition steps
+close and defensively ungrab the descriptor and are retried.
 
 ## Linux system calls and ioctls
 
@@ -64,8 +64,9 @@ allow one epoll loop to drain every keyboard without one thread per device.
 added accidentally.
 
 `/dev/uinput` is opened with `O_RDWR | O_NONBLOCK | O_CLOEXEC`. Writes inject
-input; reads drain compositor output events such as LED updates. A transient
-`EAGAIN` on the critical write path is retried rather than dropping an event.
+input; reads drain device-output events from the active display or input stack,
+such as LED updates. A transient `EAGAIN` on the critical write path is retried
+rather than dropping an event.
 
 ### `ioctl(2)` on evdev
 
@@ -150,17 +151,17 @@ The virtual keyboard is configured with:
 - `UI_SET_EVBIT(EV_KEY)` and `UI_SET_KEYBIT` for the complete Linux key range.
 - `UI_SET_EVBIT(EV_MSC)` and `UI_SET_MSCBIT(MSC_SCAN)` for hardware scan codes.
 - `UI_SET_EVBIT(EV_LED)` and `UI_SET_LEDBIT` for Num, Caps and Scroll feedback
-  from the compositor.
+  from the active display or input stack.
 - `UI_DEV_SETUP` for its name and stable virtual identity.
 - `UI_DEV_CREATE` to register it with the kernel input subsystem.
 
 Ordinary frames are injected by writing `struct input_event` records followed
 by `EV_SYN/SYN_REPORT`. `UI_DEV_DESTROY` removes the virtual keyboard during
 clean shutdown. Closing the uinput descriptor also destroys it after a crash.
-Compositor output events are drained from the same read/write uinput descriptor.
-`EV_LED` output events are the sole source of lock state. uinput does not
-frame device-output callbacks with `SYN_REPORT`, so the feedback reader passes
-all LED changes returned by each `read(2)` call to the manager as one batch.
+Device-output events are drained from the same read/write uinput descriptor.
+`EV_LED` output events are the sole source of lock state. uinput does not frame
+device-output callbacks with `SYN_REPORT`, so the feedback reader passes all
+LED changes returned by each `read(2)` call to the manager as one batch.
 
 ### Unix socket and `SO_PEERCRED`
 
@@ -174,7 +175,7 @@ instead of blocking keyboard forwarding.
 
 `internal/engine` has physical state independent of virtual output state.
 That separation permits a consumed prefix to affect matching without ever
-reaching the compositor.
+reaching the active display or input stack.
 
 The states are:
 
@@ -225,24 +226,29 @@ while another physical keyboard still holds it.
 
 `internal/linuxinput/locks_linux.go` owns three process-wide values plus a
 per-value validity bit. All are unknown at startup, so the daemon does not
-force physical LEDs off before compositor feedback arrives. Raw
+force physical LEDs off before feedback from the active display or input stack
+arrives. Raw
 `KEY_CAPSLOCK`, `KEY_NUMLOCK`, and `KEY_SCROLLLOCK` events receive no special
 treatment: they are forwarded, buffered, or consumed by the normal matcher.
 
-The virtual keyboard advertises the three standard LED outputs. The compositor
-applies its active XKB keymap and decides whether an input event changes a lock,
-then writes the resulting `EV_LED` state back to the virtual device. Thus a
-Caps Lock key remapped to Control does not accidentally toggle the Caps LED.
+The virtual keyboard advertises the three standard LED outputs. Its active
+consumer applies the current keymap and decides whether an input event changes
+a lock, then writes the resulting `EV_LED` state back to the virtual device. In
+a graphical session that consumer is typically a Wayland compositor or the
+Xorg server; the Linux virtual console can fulfill the same role outside a
+graphical session. Thus a Caps Lock key remapped to Control does not
+accidentally toggle the Caps LED.
 
 The feedback reader collects all changes returned by each `read(2)` call. The
 manager coalesces them under a mutex, adopts them as the global state, then
 writes supported `EV_LED` values to every physical keyboard followed by one
 `SYN_REPORT`. A newly connected keyboard is initialized only for states the
-compositor has provided; unknown LEDs are left untouched.
+active consumer has provided; unknown LEDs are left untouched.
 
 Lock keys are valid in prefixes and continuations. Consuming one deliberately
-prevents it from reaching the compositor, so it cannot change compositor lock
-state. This keeps remapping and sequence behavior under the same authority.
+prevents it from reaching the active display or input stack, so it cannot
+change that stack's lock state. This keeps remapping and sequence behavior
+under the same authority.
 
 ## Failure behavior
 

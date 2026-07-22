@@ -1,4 +1,4 @@
-# EAK
+# EAKD/EAKC
 
 EAK is an environment-agnostic, Linux keyboard sequence dispatcher. `eakd` is
 the privileged input broker; `eakc` is a per-user client that receives opaque
@@ -11,9 +11,11 @@ sequences such as `Logo+T, 1`. Udev notifications discover hotplugged devices
 immediately. If a newly discovered keyboard has held keys, its exclusive
 handoff is postponed until all keys are released.
 
-The compositor is authoritative for Caps Lock, Num Lock, and Scroll Lock.
-`eakd` mirrors the compositor's `EV_LED` feedback to every connected keyboard
-that exposes the corresponding LED; it never infers lock state from raw keys.
+The active display or input stack, such as a Wayland compositor, the Xorg
+server, or the Linux virtual console, is authoritative for Caps Lock, Num Lock,
+and Scroll Lock. `eakd` mirrors the `EV_LED` feedback received through its
+virtual keyboard to every connected keyboard that exposes the corresponding
+LED; it never infers lock state from raw keys.
 
 ## Build and install
 
@@ -40,6 +42,13 @@ make install DESTDIR=/tmp/eak-package-root PREFIX=/usr
 The broker's evdev and uinput implementation has been audited for Linux amd64
 and arm64 ioctl encoding and refuses to start on other architectures.
 
+## Distribution
+
+`eakd` has access to all keyboard input and therefore carries potentially serious
+security implications. This repository does not provide binary downloads.
+Users are encouraged to inspect the source code and the Makefile, then build
+`eakd` and `eakc` themselves using the instructions above.
+
 ## Configuration
 
 On the first installation, `make install` creates `/etc/eak/eakd.json` from the
@@ -56,7 +65,8 @@ common named Linux keys, and `CODE_<decimal Linux keycode>` are accepted.
 Every prefix must contain a modifier. Prefixes that are subsets of one another
 are rejected because they cannot be resolved without another timeout layer.
 The three lock keys may be used in broker sequences. If a sequence consumes
-one, the compositor does not see it and therefore does not change lock state.
+one, the active display or input stack does not see it and therefore does not
+change lock state.
 
 The broker configuration must be root-owned and not group- or world-writable.
 `-allow-insecure-config` exists only for local development.
