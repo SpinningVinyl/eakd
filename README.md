@@ -47,13 +47,66 @@ one, the compositor does not see it and therefore does not change lock state.
 The broker configuration must be root-owned and not group- or world-writable.
 `-allow-insecure-config` exists only for local development.
 
-Copy the client example to the configuration directory of every participating
-desktop user:
+### Installing eakc
+
+Run the following commands from the repository root after `make build`:
 
 ```sh
-install -D -m 0600 configs/eakc.example.json ~/.config/eak/eakc.json
-eakc -check
+sudo install -D -m 0755 bin/eakc /usr/bin/eakc
+sudo install -D -m 0644 packaging/eakc.service /usr/lib/systemd/user/eakc.service
+install -D -m 0600 configs/eakc.example.json "$HOME/.config/eak/eakc.json"
+
+/usr/bin/eakc -config "$HOME/.config/eak/eakc.json" -check
 ```
+
+The installed paths are:
+
+- Executable: `/usr/bin/eakc`
+- Per-user configuration: `~/.config/eak/eakc.json`, which expands to
+  `$HOME/.config/eak/eakc.json`
+- Systemd user service: `/usr/lib/systemd/user/eakc.service`
+
+`/usr/bin/eakc` uses `~/.config/eak/eakc.json` by default, so the explicit
+`-config` argument above is only included to make the validation command
+unambiguous. Each participating desktop user needs their own configuration.
+
+Each user must run the following commands as themselves from a graphical login
+session. Do not prefix these commands with `sudo`: `--user` addresses that
+user's systemd service manager.
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now eakc.service
+systemctl --user status eakc.service
+```
+
+`daemon-reload` makes the user service manager notice the newly installed unit.
+`enable --now` both enables eakc for subsequent graphical login sessions and
+starts it immediately in the current session. `status` should report the unit
+as `active (running)`. Its logs can be followed with:
+
+```sh
+journalctl --user --unit=eakc.service --follow
+```
+
+After editing `~/.config/eak/eakc.json`, validate it and restart the service:
+
+```sh
+/usr/bin/eakc -config "$HOME/.config/eak/eakc.json" -check
+systemctl --user restart eakc.service
+```
+
+To stop eakc and prevent it from starting in later sessions:
+
+```sh
+systemctl --user disable --now eakc.service
+```
+
+The unit joins `graphical-session.target` so launched programs inherit the
+session environment. It does not depend on eakd startup ordering because eakc
+reconnects with bounded exponential backoff. If `systemctl --user` reports that
+it cannot connect to the bus, run it from that user's active graphical login
+session rather than from a root shell or `sudo` session.
 
 Client actions have one of two types:
 
@@ -79,8 +132,11 @@ regular file owned by that user and must not be group- or world-writable.
    run `systemd-sysusers`.
 3. Install `packaging/eakd.modules-load` under
    `/usr/lib/modules-load.d/eakd.conf` so `/dev/uinput` exists after boot.
-4. Install `packaging/99-eak-input.rules` under `/usr/lib/udev/rules.d/`, reload
-   udev rules, and retrigger input devices.
+4. Install `packaging/72-eak-input.rules` as
+   `/usr/lib/udev/rules.d/72-eak-input.rules`, reload udev rules, and retrigger
+   input devices. Keep the `72-` prefix: the rule must set the `input` group
+   permissions after the standard `70-uaccess.rules` matching rules and before
+   `73-seat-late.rules` applies device ACLs.
 5. Install the configuration under `/etc/eak/eakd.json`.
 6. Install `packaging/eakd.service` under `/usr/lib/systemd/system/` and enable
    it.
@@ -98,12 +154,6 @@ The action socket uses newline-delimited JSON:
 It authenticates clients with `SO_PEERCRED` and accepts only UIDs listed in the
 root-owned configuration. It never sends raw key events and never accepts or
 executes command strings.
-
-Install `packaging/eakc.service` as a user unit, then enable it for the desktop
-user with `systemctl --user enable --now eakc.service`. The unit intentionally
-joins `graphical-session.target` so launched programs inherit the session
-environment. It intentionally does not depend on eakd startup ordering because
-eakc reconnects with bounded exponential backoff.
 
 ## Current scope
 
