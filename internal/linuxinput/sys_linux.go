@@ -76,7 +76,14 @@ func ioctl(fd int, request uintptr, argument unsafe.Pointer) error {
 }
 
 func ioctlInt(fd int, request uintptr, value int32) error {
-	return ioctl(fd, request, unsafe.Pointer(&value))
+	// The uinput bit-setting ioctls and EVIOCGRAB take their integer as the
+	// ioctl's scalar third argument. Despite being encoded with _IOW(..., int),
+	// they do not take a pointer to an int.
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), request, uintptr(value))
+	if errno != 0 {
+		return errno
+	}
+	return nil
 }
 
 func ioctlNoArg(fd int, request uintptr) error {
