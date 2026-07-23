@@ -80,8 +80,9 @@ The broker's evdev and uinput implementation has been audited for Linux amd64
 and arm64 ioctl encoding and refuses to start on other architectures.
 
 Builds made through the Makefile derive the version from
-`git describe --tags --always`: a tagged revision reports its tag, while an
-untagged repository without a reachable tag reports the abbreviated commit hash.
+`git describe --tags --always --dirty`: a tagged revision reports its tag, an
+untagged repository without a reachable tag reports the abbreviated commit
+hash, and a build containing uncommitted changes receives the `-dirty` suffix.
 Packagers building outside a Git checkout can set `VERSION` explicitly, for
 example `make VERSION=v1.0.0`.
 

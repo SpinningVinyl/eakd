@@ -15,7 +15,7 @@ SYSTEMCTL ?= systemctl
 UDEVADM ?= udevadm
 MODPROBE ?= modprobe
 
-VERSION ?= $(shell git -c safe.directory="$(CURDIR)" describe --tags --always 2>/dev/null || printf unknown)
+VERSION ?= $(shell git -c safe.directory="$(CURDIR)" describe --tags --always --dirty 2>/dev/null || printf unknown)
 VERSION_LDFLAGS = -X eak/internal/buildinfo.Version=$(VERSION)
 
 .PHONY: build test vet install clean
