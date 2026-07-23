@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"eak/internal/action"
+	"eak/internal/buildinfo"
 	"eak/internal/config"
 	"eak/internal/engine"
 	"eak/internal/input"
@@ -27,7 +28,12 @@ func main() {
 	configPath := flag.String("config", "/etc/eak/eakd.json", "path to the root-owned configuration file")
 	checkOnly := flag.Bool("check", false, "validate configuration and exit")
 	allowInsecure := flag.Bool("allow-insecure-config", false, "allow non-root/writable configuration (development only)")
+	showVersion := flag.Bool("version", false, "display version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Printf("eakd %s\n", buildinfo.Version)
+		return
+	}
 
 	logger := log.New(os.Stderr, "eakd: ", log.LstdFlags|log.Lmicroseconds)
 	if runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64" {

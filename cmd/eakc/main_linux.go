@@ -12,20 +12,29 @@ import (
 	"syscall"
 
 	"eak/internal/action"
+	"eak/internal/buildinfo"
 	"eak/internal/clientconfig"
 	"eak/internal/executor"
 )
 
 func main() {
 	logger := log.New(os.Stderr, "eakc: ", log.LstdFlags|log.Lmicroseconds)
-	defaultConfig, err := clientconfig.DefaultPath()
-	if err != nil {
-		logger.Fatal(err)
-	}
-	configPath := flag.String("config", defaultConfig, "path to the user action configuration")
+	configPath := flag.String("config", "", "path to the user action configuration (default: user config directory)")
 	checkOnly := flag.Bool("check", false, "validate configuration and exit")
 	allowInsecure := flag.Bool("allow-insecure-config", false, "allow an insecure configuration file (development only)")
+	showVersion := flag.Bool("version", false, "display version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Printf("eakc %s\n", buildinfo.Version)
+		return
+	}
+	if *configPath == "" {
+		defaultConfig, err := clientconfig.DefaultPath()
+		if err != nil {
+			logger.Fatal(err)
+		}
+		*configPath = defaultConfig
+	}
 
 	cfg, err := clientconfig.Load(*configPath, *allowInsecure)
 	if err != nil {

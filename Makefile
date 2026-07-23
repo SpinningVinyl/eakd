@@ -15,12 +15,15 @@ SYSTEMCTL ?= systemctl
 UDEVADM ?= udevadm
 MODPROBE ?= modprobe
 
+VERSION ?= $(shell git -c safe.directory="$(CURDIR)" describe --tags --always 2>/dev/null || printf unknown)
+VERSION_LDFLAGS = -X eak/internal/buildinfo.Version=$(VERSION)
+
 .PHONY: build test vet install clean
 
 build:
 	mkdir -p bin
-	go build -buildvcs=false -trimpath -o bin/eakd ./cmd/eakd
-	go build -buildvcs=false -trimpath -o bin/eakc ./cmd/eakc
+	go build -buildvcs=false -trimpath -ldflags "$(VERSION_LDFLAGS)" -o bin/eakd ./cmd/eakd
+	go build -buildvcs=false -trimpath -ldflags "$(VERSION_LDFLAGS)" -o bin/eakc ./cmd/eakc
 
 test:
 	go test ./...
@@ -30,8 +33,8 @@ vet:
 
 install:
 	$(INSTALL) -d -m 0755 "$(DESTDIR)$(LIBEXECDIR)" "$(DESTDIR)$(BINDIR)"
-	go build -buildvcs=false -trimpath -o "$(DESTDIR)$(LIBEXECDIR)/eakd" ./cmd/eakd
-	go build -buildvcs=false -trimpath -o "$(DESTDIR)$(BINDIR)/eakc" ./cmd/eakc
+	go build -buildvcs=false -trimpath -ldflags "$(VERSION_LDFLAGS)" -o "$(DESTDIR)$(LIBEXECDIR)/eakd" ./cmd/eakd
+	go build -buildvcs=false -trimpath -ldflags "$(VERSION_LDFLAGS)" -o "$(DESTDIR)$(BINDIR)/eakc" ./cmd/eakc
 	chmod 0755 "$(DESTDIR)$(LIBEXECDIR)/eakd" "$(DESTDIR)$(BINDIR)/eakc"
 	$(INSTALL) -D -m 0644 packaging/eakd.service "$(DESTDIR)$(SYSTEMD_SYSTEM_UNITDIR)/eakd.service"
 	$(INSTALL) -D -m 0644 packaging/eakc.service "$(DESTDIR)$(SYSTEMD_USER_UNITDIR)/eakc.service"

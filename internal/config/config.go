@@ -1,8 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -59,11 +61,26 @@ func Load(path string, allowInsecure bool) (Config, error) {
 		return Config{}, fmt.Errorf("read configuration: %w", err)
 	}
 	var raw File
-	decErr := json.Unmarshal(data, &raw)
-	if decErr != nil {
-		return Config{}, fmt.Errorf("parse configuration: %w", decErr)
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&raw); err != nil {
+		return Config{}, fmt.Errorf("parse configuration: %w", err)
+	}
+	if err := ensureJSONEnd(decoder); err != nil {
+		return Config{}, err
 	}
 	return compile(raw)
+}
+
+func ensureJSONEnd(decoder *json.Decoder) error {
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("parse configuration: multiple JSON values")
+		}
+		return fmt.Errorf("parse configuration: %w", err)
+	}
+	return nil
 }
 
 func checkSecureFile(path string) error {

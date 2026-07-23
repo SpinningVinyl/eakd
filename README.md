@@ -19,6 +19,41 @@ and Scroll Lock. `eakd` mirrors the `EV_LED` feedback received through its
 virtual keyboard to every connected keyboard that exposes the corresponding
 LED; it never infers lock state from raw keys.
 
+## Basic flow
+
+```mermaid
+flowchart LR
+    K["Physical keyboard<br/>evdev input"]
+
+    subgraph D["eakd — privileged input broker"]
+        M{"Sequence matcher"}
+        F["Input forwarder"]
+        P["Action publisher"]
+        U["Virtual keyboard<br/>uinput"]
+    end
+
+    S["Active userspace input stack<br/>Wayland compositor, Xorg, or console"]
+
+    subgraph C["eakc — per-user client"]
+        R["Receive opaque action ID"]
+        L["Look up configured action"]
+        E["Execute program<br/>or shell script"]
+    end
+
+    K -->|"Raw keyboard events"| M
+    M -->|"Ordinary or unmatched input"| F
+    F --> U
+    U -->|"Forwarded keyboard input"| S
+
+    M -->|"Matched preconfigured<br/>hotkey sequence"| P
+    P -->|"Action ID only<br/>authenticated Unix socket"| R
+    R --> L
+    L --> E
+
+    N["Raw keyboard events are<br/>never sent to eakc"]
+    R -.-> N
+```
+
 ## Build and install
 
 ```sh
@@ -44,6 +79,12 @@ make install DESTDIR=/tmp/eak-package-root PREFIX=/usr
 The broker's evdev and uinput implementation has been audited for Linux amd64
 and arm64 ioctl encoding and refuses to start on other architectures.
 
+Builds made through the Makefile derive the version from
+`git describe --tags --always`: a tagged revision reports its tag, while an
+untagged repository without a reachable tag reports the abbreviated commit hash.
+Packagers building outside a Git checkout can set `VERSION` explicitly, for
+example `make VERSION=v1.0.0`.
+
 ## Distribution
 
 `eakd` has access to all keyboard input and therefore carries potentially serious
@@ -58,7 +99,7 @@ example configuration. Replace `allowed_uids` with the UID that will run
 `eakc`, adjust the bindings, validate the file, and enable the broker:
 
 ```sh
-sudo /usr/libexec/eakd -config /etc/eak/eakd.json -check
+sudo /usr/libexec/eakd --config /etc/eak/eakd.json --check
 sudo systemctl enable --now eakd.service
 ```
 
@@ -71,7 +112,7 @@ one, the active display or input stack does not see it and therefore does not
 change lock state.
 
 The broker configuration must be root-owned and not group- or world-writable.
-`-allow-insecure-config` exists only for local development.
+`--allow-insecure-config` exists only for local development.
 
 ### Installing eakc
 
@@ -82,7 +123,7 @@ their own configuration:
 ```sh
 install -D -m 0600 /usr/share/doc/eak/eakc.example.json "$HOME/.config/eak/eakc.json"
 
-/usr/bin/eakc -config "$HOME/.config/eak/eakc.json" -check
+/usr/bin/eakc --config "$HOME/.config/eak/eakc.json" --check
 ```
 
 The installed paths are:
@@ -93,7 +134,7 @@ The installed paths are:
 - Systemd user service: `/usr/lib/systemd/user/eakc.service`
 
 `/usr/bin/eakc` uses `~/.config/eak/eakc.json` by default, so the explicit
-`-config` argument above is only included to make the validation command
+`--config` argument above is only included to make the validation command
 unambiguous. Each participating desktop user needs their own configuration.
 
 Each user must run the following commands as themselves from a graphical login
@@ -118,7 +159,7 @@ journalctl --user --unit=eakc.service --follow
 After editing `~/.config/eak/eakc.json`, validate it and restart the service:
 
 ```sh
-/usr/bin/eakc -config "$HOME/.config/eak/eakc.json" -check
+/usr/bin/eakc --config "$HOME/.config/eak/eakc.json" --check
 systemctl --user restart eakc.service
 ```
 
@@ -149,7 +190,7 @@ The client reconnects automatically while eakd is unavailable or restarting.
 
 The eakc configuration executes code with the user's privileges. It must be a
 regular file owned by that user and must not be group- or world-writable.
-`-allow-insecure-config` is available only for development.
+`--allow-insecure-config` is available only for development.
 
 ## System access
 
