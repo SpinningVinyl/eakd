@@ -598,7 +598,7 @@ func classifyKeyboardCapabilities(capabilities []byte, queryErr error) (bool, er
 	if queryErr != nil {
 		return false, fmt.Errorf("EVIOCGBIT(EV_KEY): %w", queryErr)
 	}
-	return looksLikeKeyboard(capabilities), nil
+	return looksLikeKeyboard(capabilities) || looksLikeNumpad(capabilities), nil
 }
 
 // acquireIdleDevice performs the idle check before EVIOCGRAB. The candidate's

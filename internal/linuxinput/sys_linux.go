@@ -236,10 +236,34 @@ func discardQueuedEvents(fd int) error {
 }
 
 func looksLikeKeyboard(capabilities []byte) bool {
-	return bitIsSet(capabilities, keycode.KeyA) &&
-		bitIsSet(capabilities, keycode.KeyZ) &&
-		bitIsSet(capabilities, keycode.KeySpace) &&
+	hasLeftHalf := bitIsSet(capabilities, keycode.KeyA) &&
+		bitIsSet(capabilities, keycode.KeyZ)
+	hasRightHalf := bitIsSet(capabilities, keycode.KeyP) &&
+		bitIsSet(capabilities, keycode.KeyL)
+	hasSpaceOrEnter := bitIsSet(capabilities, keycode.KeySpace) ||
 		bitIsSet(capabilities, keycode.KeyEnter)
+	return (hasLeftHalf || hasRightHalf) && hasSpaceOrEnter
+}
+
+func looksLikeNumpad(capabilities []byte) bool {
+	numericKeys := [...]uint16{
+		keycode.KeyKP0,
+		keycode.KeyKP1,
+		keycode.KeyKP2,
+		keycode.KeyKP3,
+		keycode.KeyKP4,
+		keycode.KeyKP5,
+		keycode.KeyKP6,
+		keycode.KeyKP7,
+		keycode.KeyKP8,
+		keycode.KeyKP9,
+	}
+	for _, code := range numericKeys {
+		if !bitIsSet(capabilities, code) {
+			return false
+		}
+	}
+	return bitIsSet(capabilities, keycode.KeyKPEnter)
 }
 
 func grab(fd int, enabled bool) error {

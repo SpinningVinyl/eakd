@@ -75,10 +75,14 @@ Linux device operations not expressible as ordinary reads use `ioctl`:
 - `EVIOCGNAME` retrieves the kernel device name. It excludes `eakd virtual
   keyboard`, preventing a feedback loop.
 - `EVIOCGBIT(EV_KEY)` retrieves the supported-key bitmap. A node is treated as
-  a typing keyboard when it exposes `KEY_A`, `KEY_Z`, `KEY_SPACE`, and
-  `KEY_ENTER`; this excludes mouse-button and consumer-control interfaces. A
-  successful query without those keys is a permanent rejection, while a query
-  error closes the descriptor and enters the bounded reacquisition path.
+  a typing keyboard when it exposes either `KEY_SPACE` or `KEY_ENTER` together
+  with either `KEY_A` and `KEY_Z`, or `KEY_P` and `KEY_L`. Accepting either
+  letter pair and either common non-letter key accommodates the separate halves
+  of ergonomic keyboards while excluding mouse-button and consumer-control
+  interfaces. A standalone numpad is also accepted when it exposes `KEY_KP0`
+  through `KEY_KP9` together with `KEY_KPENTER`. A successful query without
+  either capability set is a permanent rejection, while a query error closes
+  the descriptor and enters the bounded reacquisition path.
 - `EVIOCGRAB(1)` makes this file descriptor the exclusive evdev recipient.
   Other evdev clients stop receiving physical events. `EVIOCGRAB(0)` or closing
   the descriptor releases the grab.
