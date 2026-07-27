@@ -15,8 +15,15 @@ import (
 )
 
 type client struct {
-	connection *net.UnixConn
+	uid        uint32
+	connection clientConnection
 	queue      chan []byte
+}
+
+type clientConnection interface {
+	Read([]byte) (int, error)
+	Write([]byte) (int, error)
+	Close() error
 }
 
 // Server broadcasts newline-delimited action objects. It authenticates each
@@ -28,7 +35,7 @@ type Server struct {
 	ready   chan struct{}
 
 	mu      sync.Mutex
-	clients map[*client]struct{}
+	clients map[uint32]*client
 }
 
 func NewServer(path string, allowedUIDs []uint32, logger *log.Logger) *Server {
@@ -38,7 +45,7 @@ func NewServer(path string, allowedUIDs []uint32, logger *log.Logger) *Server {
 	}
 	return &Server{
 		path: path, allowed: allowed, logger: logger, ready: make(chan struct{}),
-		clients: make(map[*client]struct{}),
+		clients: make(map[uint32]*client),
 	}
 }
 
@@ -87,13 +94,26 @@ func (s *Server) Serve(ctx context.Context) error {
 			_ = connection.Close()
 			continue
 		}
-		c := &client{connection: connection, queue: make(chan []byte, 16)}
-		s.mu.Lock()
-		s.clients[c] = struct{}{}
-		s.mu.Unlock()
+		c := &client{uid: uid, connection: connection, queue: make(chan []byte, 16)}
+		if !s.addClient(c) {
+			s.logger.Printf("reject duplicate action client uid %d", uid)
+			_ = connection.Close()
+			continue
+		}
 		s.logger.Printf("accepted action client uid %d", uid)
 		go s.writeClient(c)
+		go s.watchClient(c)
 	}
+}
+
+func (s *Server) addClient(c *client) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.clients[c.uid]; exists {
+		return false
+	}
+	s.clients[c.uid] = c
+	return true
 }
 
 // Publish never blocks keyboard forwarding. A client that cannot consume 16
@@ -103,12 +123,12 @@ func (s *Server) Publish(action string) {
 	data = append(data, '\n')
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for c := range s.clients {
+	for uid, c := range s.clients {
 		copyOfData := append([]byte(nil), data...)
 		select {
 		case c.queue <- copyOfData:
 		default:
-			delete(s.clients, c)
+			delete(s.clients, uid)
 			close(c.queue)
 			_ = c.connection.Close()
 		}
@@ -121,20 +141,33 @@ func (s *Server) writeClient(c *client) {
 			break
 		}
 	}
+	s.removeClient(c)
+}
+
+// watchClient releases the UID's connection slot promptly when the peer
+// disconnects. The action protocol is one-way, so any received data also
+// terminates the connection.
+func (s *Server) watchClient(c *client) {
+	var buffer [1]byte
+	_, _ = c.connection.Read(buffer[:])
+	s.removeClient(c)
+}
+
+func (s *Server) removeClient(c *client) {
 	s.mu.Lock()
-	if _, exists := s.clients[c]; exists {
-		delete(s.clients, c)
+	if current, exists := s.clients[c.uid]; exists && current == c {
+		delete(s.clients, c.uid)
 		close(c.queue)
+		_ = c.connection.Close()
 	}
 	s.mu.Unlock()
-	_ = c.connection.Close()
 }
 
 func (s *Server) closeClients() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for c := range s.clients {
-		delete(s.clients, c)
+	for uid, c := range s.clients {
+		delete(s.clients, uid)
 		close(c.queue)
 		_ = c.connection.Close()
 	}

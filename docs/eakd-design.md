@@ -172,8 +172,11 @@ LED changes returned by each `read(2)` call to the manager as one batch.
 Go's `net.ListenUnix` wraps `socket`, `bind`, `listen`, and `accept`. After
 accepting, `SO_PEERCRED` returns credentials assigned by the kernel to that
 connection; the client cannot forge them in message data. Only configured UIDs
-are retained. Each client has a bounded queue, so a stalled client is dropped
-instead of blocking keyboard forwarding.
+are retained, with at most one active connection per authorized UID. Each
+client has a bounded queue, so a stalled client is dropped instead of blocking
+keyboard forwarding. A passive read detects disconnects promptly; because the
+protocol is daemon-to-client only, receiving client data also closes the
+connection.
 
 ## Matching and buffering
 

@@ -221,8 +221,9 @@ The action socket uses newline-delimited JSON:
 ```
 
 It authenticates clients with `SO_PEERCRED` and accepts only UIDs listed in the
-root-owned configuration. It never sends raw key events and never accepts or
-executes command strings.
+root-owned configuration. At most one client connection is retained for each
+authorized UID. It never sends raw key events and never accepts or executes
+command strings.
 
 ## Current scope
 
