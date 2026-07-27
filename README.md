@@ -105,7 +105,9 @@ sudo systemctl enable --now eakd.service
 ```
 
 `CTRL`, `SHIFT`, `ALT`, and `LOGO` match either side. Letters, digits, F1-F12,
-common named Linux keys, and `CODE_<decimal Linux keycode>` are accepted.
+common named Linux keys, all Linux `KEY_KP*` keypad names (also accepted
+without the `KEY_` prefix, for example `KP1` and `KPENTER`), and
+`CODE_<decimal Linux keycode>` are accepted.
 Every prefix must contain a modifier. Prefixes that are subsets of one another
 are rejected because they cannot be resolved without another timeout layer.
 The three lock keys may be used in broker sequences. If a sequence consumes

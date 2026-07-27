@@ -7,47 +7,78 @@ import (
 )
 
 const (
-	KeyEsc        = 1
-	Key1          = 2
-	Key0          = 11
-	KeyQ          = 16
-	KeyP          = 25
-	KeyA          = 30
-	KeyT          = 20
-	KeyX          = 45
-	KeyL          = 38
-	KeyLeftShift  = 42
-	KeyZ          = 44
-	KeyM          = 50
-	KeyRightShift = 54
-	KeyLeftAlt    = 56
-	KeySpace      = 57
-	KeyF1         = 59
-	KeyF10        = 68
-	KeyNumLock    = 69
-	KeyScrollLock = 70
-	KeyKP7        = 71
-	KeyKP8        = 72
-	KeyKP9        = 73
-	KeyKP4        = 75
-	KeyKP5        = 76
-	KeyKP6        = 77
-	KeyKP1        = 79
-	KeyKP2        = 80
-	KeyKP3        = 81
-	KeyKP0        = 82
-	KeyEnter      = 28
-	KeyLeftCtrl   = 29
-	KeyKPEnter    = 96
-	KeyRightCtrl  = 97
-	KeyRightAlt   = 100
-	KeyLeftMeta   = 125
-	KeyRightMeta  = 126
-	KeyCompose    = 127
-	KeyCapsLock   = 58
-	KeyF11        = 87
-	KeyF12        = 88
-	KeyMax        = 0x2ff
+	KeyEsc = 1
+	Key1   = 2
+	Key0   = 11
+
+	KeyA = 30
+	KeyB = 48
+	KeyC = 46
+	KeyD = 32
+	KeyE = 18
+	KeyF = 33
+	KeyG = 34
+	KeyH = 35
+	KeyI = 23
+	KeyJ = 36
+	KeyK = 37
+	KeyL = 38
+	KeyM = 50
+	KeyN = 49
+	KeyO = 24
+	KeyP = 25
+	KeyQ = 16
+	KeyR = 19
+	KeyS = 31
+	KeyT = 20
+	KeyU = 22
+	KeyV = 47
+	KeyW = 17
+	KeyX = 45
+	KeyY = 21
+	KeyZ = 44
+
+	KeyEnter        = 28
+	KeyLeftCtrl     = 29
+	KeyLeftShift    = 42
+	KeyRightShift   = 54
+	KeyKPAsterisk   = 55
+	KeyLeftAlt      = 56
+	KeySpace        = 57
+	KeyCapsLock     = 58
+	KeyF1           = 59
+	KeyF10          = 68
+	KeyNumLock      = 69
+	KeyScrollLock   = 70
+	KeyKP7          = 71
+	KeyKP8          = 72
+	KeyKP9          = 73
+	KeyKPMinus      = 74
+	KeyKP4          = 75
+	KeyKP5          = 76
+	KeyKP6          = 77
+	KeyKPPlus       = 78
+	KeyKP1          = 79
+	KeyKP2          = 80
+	KeyKP3          = 81
+	KeyKP0          = 82
+	KeyKPDot        = 83
+	KeyF11          = 87
+	KeyF12          = 88
+	KeyKPJPComma    = 95
+	KeyKPEnter      = 96
+	KeyRightCtrl    = 97
+	KeyKPSlash      = 98
+	KeyRightAlt     = 100
+	KeyKPEqual      = 117
+	KeyKPPlusMinus  = 118
+	KeyKPComma      = 121
+	KeyLeftMeta     = 125
+	KeyRightMeta    = 126
+	KeyCompose      = 127
+	KeyKPLeftParen  = 179
+	KeyKPRightParen = 180
+	KeyMax          = 0x2ff
 )
 
 // Logical is a matching key. Values below logicalBase are real Linux key
@@ -107,15 +138,39 @@ var fixedNames = map[string]uint16{
 	"KEY_LEFTMETA":   KeyLeftMeta,
 	"KEY_RIGHTMETA":  KeyRightMeta,
 	"KEY_COMPOSE":    KeyCompose,
+
+	"KEY_KPASTERISK":   KeyKPAsterisk,
+	"KEY_KP0":          KeyKP0,
+	"KEY_KP1":          KeyKP1,
+	"KEY_KP2":          KeyKP2,
+	"KEY_KP3":          KeyKP3,
+	"KEY_KP4":          KeyKP4,
+	"KEY_KP5":          KeyKP5,
+	"KEY_KP6":          KeyKP6,
+	"KEY_KP7":          KeyKP7,
+	"KEY_KP8":          KeyKP8,
+	"KEY_KP9":          KeyKP9,
+	"KEY_KPMINUS":      KeyKPMinus,
+	"KEY_KPPLUS":       KeyKPPlus,
+	"KEY_KPDOT":        KeyKPDot,
+	"KEY_KPJPCOMMA":    KeyKPJPComma,
+	"KEY_KPENTER":      KeyKPEnter,
+	"KEY_KPSLASH":      KeyKPSlash,
+	"KEY_KPEQUAL":      KeyKPEqual,
+	"KEY_KPPLUSMINUS":  KeyKPPlusMinus,
+	"KEY_KPCOMMA":      KeyKPComma,
+	"KEY_KPLEFTPAREN":  KeyKPLeftParen,
+	"KEY_KPRIGHTPAREN": KeyKPRightParen,
 }
 
 var letterCodes = []uint16{
-	KeyA, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, KeyL, KeyM,
-	49, 24, KeyP, KeyQ, 19, 31, 20, 22, 47, 17, 45, 21, KeyZ,
+	KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM,
+	KeyN, KeyO, KeyP, KeyQ, KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
 }
 
 // Parse converts configuration names to logical matching keys. CTRL, SHIFT,
 // ALT and LOGO intentionally match either the left or right physical key.
+// Keypad keys accept both KEY_KP* Linux names and their shorter KP* aliases.
 // CODE_<decimal> is available for kernel keys not present in the name table.
 func Parse(name string) (Logical, error) {
 	n := strings.ToUpper(strings.TrimSpace(name))
@@ -151,7 +206,11 @@ func Parse(name string) (Logical, error) {
 			return Logical(KeyF11 + uint16(v-11)), nil
 		}
 	}
-	if code, ok := fixedNames[n]; ok {
+	lookupName := n
+	if strings.HasPrefix(n, "KP") {
+		lookupName = "KEY_" + n
+	}
+	if code, ok := fixedNames[lookupName]; ok {
 		return Canonical(code), nil
 	}
 	if strings.HasPrefix(n, "CODE_") {
