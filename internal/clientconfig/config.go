@@ -7,7 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
+
+	"eak/internal/configfile"
 )
 
 const (
@@ -53,12 +54,7 @@ func DefaultPath() (string, error) {
 }
 
 func Load(path string, allowInsecure bool) (Config, error) {
-	if !allowInsecure {
-		if err := checkSecureFile(path); err != nil {
-			return Config{}, err
-		}
-	}
-	file, err := os.Open(path)
+	file, err := configfile.Open(path, uint32(os.Geteuid()), allowInsecure)
 	if err != nil {
 		return Config{}, fmt.Errorf("open configuration: %w", err)
 	}
@@ -83,27 +79,6 @@ func ensureJSONEnd(decoder *json.Decoder) error {
 			return fmt.Errorf("parse configuration: multiple JSON values")
 		}
 		return fmt.Errorf("parse configuration: %w", err)
-	}
-	return nil
-}
-
-func checkSecureFile(path string) error {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return fmt.Errorf("stat configuration: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("configuration %q is not a regular file", path)
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return fmt.Errorf("cannot inspect configuration ownership")
-	}
-	if stat.Uid != uint32(os.Geteuid()) {
-		return fmt.Errorf("configuration %q must be owned by uid %d", path, os.Geteuid())
-	}
-	if info.Mode().Perm()&0o022 != 0 {
-		return fmt.Errorf("configuration %q must not be group- or world-writable", path)
 	}
 	return nil
 }

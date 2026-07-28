@@ -1,15 +1,13 @@
 package config
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 
+	"eak/internal/configfile"
 	"eak/internal/keycode"
 )
 
@@ -50,18 +48,14 @@ type Binding struct {
 }
 
 func Load(path string, allowInsecure bool) (Config, error) {
-	if !allowInsecure {
-		if err := checkSecureFile(path); err != nil {
-			return Config{}, err
-		}
-	}
-
-	data, err := os.ReadFile(path)
+	file, err := configfile.Open(path, 0, allowInsecure)
 	if err != nil {
-		return Config{}, fmt.Errorf("read configuration: %w", err)
+		return Config{}, fmt.Errorf("open configuration: %w", err)
 	}
+	defer file.Close()
+
 	var raw File
-	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder := json.NewDecoder(file)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&raw); err != nil {
 		return Config{}, fmt.Errorf("parse configuration: %w", err)
@@ -79,27 +73,6 @@ func ensureJSONEnd(decoder *json.Decoder) error {
 			return fmt.Errorf("parse configuration: multiple JSON values")
 		}
 		return fmt.Errorf("parse configuration: %w", err)
-	}
-	return nil
-}
-
-func checkSecureFile(path string) error {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return fmt.Errorf("stat configuration: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("configuration %q is not a regular file", path)
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return fmt.Errorf("cannot inspect configuration ownership")
-	}
-	if stat.Uid != 0 {
-		return fmt.Errorf("configuration %q must be owned by root", path)
-	}
-	if info.Mode().Perm()&0o022 != 0 {
-		return fmt.Errorf("configuration %q must not be group- or world-writable", path)
 	}
 	return nil
 }

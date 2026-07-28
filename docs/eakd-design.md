@@ -13,7 +13,9 @@ turn the broker back into a keylogging oracle.
 
 ## Startup order
 
-1. `cmd/eakd/main_linux.go` parses and validates the root-owned JSON file.
+1. `cmd/eakd/main_linux.go` opens the JSON file without following a final
+   symlink, validates ownership and permissions with `fstat(2)` on that
+   descriptor, then parses the same descriptor.
 2. `internal/action` binds the action socket and enables peer authentication.
 3. `internal/linuxinput/uinput_linux.go` creates the virtual keyboard and waits
    for its sysfs event node to appear.

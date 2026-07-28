@@ -114,8 +114,9 @@ The three lock keys may be used in broker sequences. If a sequence consumes
 one, the active display or input stack does not see it and therefore does not
 change lock state.
 
-The broker configuration must be root-owned and not group- or world-writable.
-`--allow-insecure-config` exists only for local development.
+The broker configuration must be a root-owned regular file, must not be a
+symlink, and must not be group- or world-writable. `--allow-insecure-config`
+exists only for local development.
 
 ### Installing eakc
 
@@ -192,8 +193,8 @@ in the bounded `queue_size` channel. Unknown action IDs are logged and ignored.
 The client reconnects automatically while eakd is unavailable or restarting.
 
 The eakc configuration executes code with the user's privileges. It must be a
-regular file owned by that user and must not be group- or world-writable.
-`--allow-insecure-config` is available only for development.
+regular file owned by that user, must not be a symlink, and must not be group-
+or world-writable. `--allow-insecure-config` is available only for development.
 
 ## System access
 
