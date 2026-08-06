@@ -179,6 +179,11 @@ reconnects with bounded exponential backoff. If `systemctl --user` reports that
 it cannot connect to the bus, run it from that user's active graphical login
 session rather than from a root shell or `sudo` session.
 
+The user unit intentionally does not set systemd's `NoNewPrivileges` option.
+Actions can launch terminal emulators, and that option would be inherited by
+their shells and prevent setuid programs such as `sudo` from working. Actions
+still run as the user who owns the eakc service.
+
 Client actions have one of two types:
 
 - `exec` takes a non-empty `command` array and executes it directly. Arguments
