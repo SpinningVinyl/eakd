@@ -1,5 +1,5 @@
 [Unit]
-Description=Environment-Agnostic hotKey action client
+Description=Environment-Agnostic hotKey Client
 PartOf=graphical-session.target
 After=graphical-session.target
 
