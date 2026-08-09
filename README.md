@@ -59,20 +59,25 @@ flowchart LR
 ```sh
 make test
 make vet
+make build
 sudo make install
 ```
 
-`make install` builds and installs both binaries, the system and user systemd
-units, the sysusers and modules-load configurations, the udev rule, and example
-configurations. It then creates the `eakd` system account, loads uinput, reloads
-the udev rules, and reloads the systemd manager. It does not enable or start
-either service. An existing `/etc/eak/eakd.json` is preserved.
+`make build` compiles both binaries as the current user. `make install` installs
+the pre-built binaries, the system and user systemd units, the sysusers and
+modules-load configurations, the udev rule, and example configurations. This
+separation supports user-scoped Go installations such as mise when the install
+step needs root privileges. The install step then creates the `eakd` system
+account, loads uinput, reloads the udev rules, and reloads the systemd manager.
+It does not enable or start either service. An existing `/etc/eak/eakd.json` is
+preserved.
 
 The default installation prefix is `/usr`. Packagers can stage the installation
 with `DESTDIR`; host-side setup commands are skipped when `DESTDIR` is
 non-empty. For example:
 
 ```sh
+make build
 make install DESTDIR=/tmp/eak-package-root PREFIX=/usr
 ```
 

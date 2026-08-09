@@ -32,10 +32,13 @@ vet:
 	go vet -buildvcs=false ./...
 
 install:
+	@test -x bin/eakd -a -x bin/eakc || { \
+		echo "Binaries not found; run 'make build' before 'make install'." >&2; \
+		exit 1; \
+	}
 	$(INSTALL) -d -m 0755 "$(DESTDIR)$(LIBEXECDIR)" "$(DESTDIR)$(BINDIR)"
-	go build -buildvcs=false -trimpath -ldflags "$(VERSION_LDFLAGS)" -o "$(DESTDIR)$(LIBEXECDIR)/eakd" ./cmd/eakd
-	go build -buildvcs=false -trimpath -ldflags "$(VERSION_LDFLAGS)" -o "$(DESTDIR)$(BINDIR)/eakc" ./cmd/eakc
-	chmod 0755 "$(DESTDIR)$(LIBEXECDIR)/eakd" "$(DESTDIR)$(BINDIR)/eakc"
+	$(INSTALL) -m 0755 bin/eakd "$(DESTDIR)$(LIBEXECDIR)/eakd"
+	$(INSTALL) -m 0755 bin/eakc "$(DESTDIR)$(BINDIR)/eakc"
 	$(INSTALL) -D -m 0644 packaging/eakd.service "$(DESTDIR)$(SYSTEMD_SYSTEM_UNITDIR)/eakd.service"
 	$(INSTALL) -D -m 0644 packaging/eakc.service "$(DESTDIR)$(SYSTEMD_USER_UNITDIR)/eakc.service"
 	$(INSTALL) -D -m 0644 packaging/eakd.sysusers "$(DESTDIR)$(SYSUSERSDIR)/eakd.conf"
