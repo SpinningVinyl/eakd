@@ -3,6 +3,7 @@ package clientconfig
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -26,6 +27,10 @@ func TestLoadClientConfiguration(t *testing.T) {
 	}
 	if got := cfg.Actions["terminal.one"].Command; len(got) != 3 || got[0] != "/usr/bin/foot" {
 		t.Fatalf("unexpected exec action: %#v", got)
+	}
+	if got, want := cfg.Actions["audio.toggle"].Command,
+		[]string{"/bin/sh", "-c", "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"}; !slices.Equal(got, want) {
+		t.Fatalf("shell command = %#v, want %#v", got, want)
 	}
 }
 

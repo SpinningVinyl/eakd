@@ -39,9 +39,7 @@ type Config struct {
 }
 
 type Action struct {
-	Type             string
 	Command          []string
-	Script           string
 	WorkingDirectory string
 }
 
@@ -116,34 +114,37 @@ func compile(raw File) (Config, error) {
 		if strings.TrimSpace(id) == "" {
 			return Config{}, fmt.Errorf("action ID must not be empty")
 		}
-		action := Action{
-			Type:             rawAction.Type,
-			Command:          append([]string(nil), rawAction.Command...),
-			Script:           rawAction.Script,
-			WorkingDirectory: rawAction.WorkingDirectory,
-		}
-		if action.WorkingDirectory != "" && !filepath.IsAbs(action.WorkingDirectory) {
+		if rawAction.WorkingDirectory != "" && !filepath.IsAbs(rawAction.WorkingDirectory) {
 			return Config{}, fmt.Errorf("action %q: working_directory must be absolute", id)
 		}
-		switch action.Type {
+
+		var command []string
+		switch rawAction.Type {
 		case "exec":
-			if len(action.Command) == 0 || action.Command[0] == "" {
+			if len(rawAction.Command) == 0 || rawAction.Command[0] == "" {
 				return Config{}, fmt.Errorf("action %q: exec requires a non-empty command array", id)
 			}
-			if action.Script != "" {
+			if rawAction.Script != "" {
 				return Config{}, fmt.Errorf("action %q: exec cannot contain script", id)
 			}
+			command = append([]string(nil), rawAction.Command...)
+
 		case "shell":
-			if action.Script == "" {
+			if rawAction.Script == "" {
 				return Config{}, fmt.Errorf("action %q: shell requires a non-empty script", id)
 			}
-			if len(action.Command) != 0 {
+			if len(rawAction.Command) != 0 {
 				return Config{}, fmt.Errorf("action %q: shell cannot contain command", id)
 			}
+			command = []string{"/bin/sh", "-c", rawAction.Script}
 		default:
-			return Config{}, fmt.Errorf("action %q: unsupported type %q", id, action.Type)
+			return Config{}, fmt.Errorf("action %q: unsupported type %q", id, rawAction.Type)
 		}
-		cfg.Actions[id] = action
+
+		cfg.Actions[id] = Action{
+			Command:          command,
+			WorkingDirectory: rawAction.WorkingDirectory,
+		}
 	}
 	return cfg, nil
 }

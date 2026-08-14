@@ -2,7 +2,6 @@ package executor
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -69,29 +68,19 @@ type job struct {
 }
 
 func (r *Runner) execute(ctx context.Context, task job) {
-	command, err := buildCommand(ctx, task.action)
-	if err != nil {
-		r.logger.Printf("action %q: %v", task.id, err)
-		return
-	}
+	command := exec.CommandContext(
+		ctx,
+		task.action.Command[0],
+		task.action.Command[1:]...,
+	)
 	command.Dir = task.action.WorkingDirectory
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
+
 	r.logger.Printf("start action %q", task.id)
 	if err := command.Run(); err != nil {
 		r.logger.Printf("action %q failed: %v", task.id, err)
 		return
 	}
 	r.logger.Printf("action %q completed", task.id)
-}
-
-func buildCommand(ctx context.Context, action clientconfig.Action) (*exec.Cmd, error) {
-	switch action.Type {
-	case "exec":
-		return exec.CommandContext(ctx, action.Command[0], action.Command[1:]...), nil
-	case "shell":
-		return exec.CommandContext(ctx, "/bin/sh", "-c", action.Script), nil
-	default:
-		return nil, fmt.Errorf("unsupported action type %q", action.Type)
-	}
 }
