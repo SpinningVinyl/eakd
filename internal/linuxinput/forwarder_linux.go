@@ -4,7 +4,7 @@ package linuxinput
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 
 	"eak/internal/input"
 	"eak/internal/keycode"
@@ -122,8 +122,8 @@ func (f *Forwarder) Resync(deviceID string, actual map[uint16]bool) error {
 			presses = append(presses, code)
 		}
 	}
-	sort.Slice(releases, func(i, j int) bool { return releases[i] < releases[j] })
-	sort.Slice(presses, func(i, j int) bool { return presses[i] < presses[j] })
+	slices.Sort(releases)
+	slices.Sort(presses)
 
 	wrote := false
 	for _, code := range releases {

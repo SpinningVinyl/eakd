@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"slices"
 	"time"
 
 	"eak/internal/config"
@@ -215,7 +216,7 @@ func (e *Engine) applyFrame(frame input.Frame) []transition {
 func (e *Engine) startPrefixCandidate(first keycode.Logical, now time.Time) {
 	possible := make([]int, 0, len(e.cfg.Prefixes))
 	for i, prefix := range e.cfg.Prefixes {
-		if contains(prefix.Keys, first) {
+		if slices.Contains(prefix.Keys, first) {
 			possible = append(possible, i)
 		}
 	}
@@ -244,7 +245,7 @@ func (e *Engine) advancePrefix(tr transition, now time.Time, result *Result) {
 func (e *Engine) startBindingCandidate(first keycode.Logical) {
 	possible := make([]int, 0, len(e.cfg.Prefixes[e.activePrefix].Bindings))
 	for i, binding := range e.cfg.Prefixes[e.activePrefix].Bindings {
-		if contains(binding.Keys, first) {
+		if slices.Contains(binding.Keys, first) {
 			possible = append(possible, i)
 		}
 	}
@@ -276,7 +277,7 @@ func (e *Engine) advanceSequence(tr transition, chord func(int) []keycode.Logica
 		e.seq.held[tr.key] = true
 		filtered := e.seq.possible[:0]
 		for _, index := range e.seq.possible {
-			if contains(chord(index), tr.key) {
+			if slices.Contains(chord(index), tr.key) {
 				filtered = append(filtered, index)
 			}
 		}
@@ -297,7 +298,7 @@ func (e *Engine) advanceSequence(tr transition, chord func(int) []keycode.Logica
 		if e.seq.matched < 0 {
 			return false
 		}
-		if !contains(chord(e.seq.matched), tr.key) {
+		if !slices.Contains(chord(e.seq.matched), tr.key) {
 			return false
 		}
 	}
@@ -319,15 +320,6 @@ func (e *Engine) toIdle() {
 	e.seq = sequence{}
 	e.buffer = nil
 	e.deadline = time.Time{}
-}
-
-func contains(keys []keycode.Logical, wanted keycode.Logical) bool {
-	for _, key := range keys {
-		if key == wanted {
-			return true
-		}
-	}
-	return false
 }
 
 func chordHeldAndSeen(keys []keycode.Logical, seen, held map[keycode.Logical]bool) bool {
