@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"time"
 
 	"eak/internal/configfile"
@@ -171,17 +173,15 @@ func parseChord(names []string) ([]keycode.Logical, error) {
 }
 
 func chordSignature(keys []keycode.Logical) string {
-	set := make(map[keycode.Logical]bool, len(keys))
-	for _, key := range keys {
-		set[key] = true
+	sorted := slices.Clone(keys)
+	slices.Sort(sorted)
+
+	signature := make([]byte, 0, len(sorted)*6)
+	for _, key := range sorted {
+		signature = strconv.AppendUint(signature, uint64(key), 10)
+		signature = append(signature, ',')
 	}
-	result := ""
-	for key := keycode.Logical(0); key <= keycode.LogicalLogo; key++ {
-		if set[key] {
-			result += fmt.Sprintf("%d,", key)
-		}
-	}
-	return result
+	return string(signature)
 }
 
 func subset(a, b []keycode.Logical) bool {

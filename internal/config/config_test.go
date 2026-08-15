@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"eak/internal/keycode"
 )
 
 func TestLoadAndCompile(t *testing.T) {
@@ -109,5 +111,43 @@ func TestLockKeysMayBeConsumedBySequences(t *testing.T) {
 	}
 	if _, err := Load(path, true); err != nil {
 		t.Fatalf("configuration rejected a compositor-remappable lock key: %v", err)
+	}
+}
+
+func TestChordSignatureIsIndependentOfKeyOrder(t *testing.T) {
+	left := []keycode.Logical{keycode.LogicalLogo, keycode.Logical(keycode.KeyT)}
+	right := []keycode.Logical{keycode.Logical(keycode.KeyT), keycode.LogicalLogo}
+
+	if chordSignature(left) != chordSignature(right) {
+		t.Fatalf("equivalent chords have different signatures: %q and %q", chordSignature(left), chordSignature(right))
+	}
+	if left[0] != keycode.LogicalLogo {
+		t.Fatal("chordSignature modified its input")
+	}
+}
+
+func TestLoadRejectsDuplicatePrefixWithDifferentKeyOrder(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "eakd.json")
+	data := []byte(`{
+  "allowed_uids": [1000],
+  "prefixes": [
+    {
+      "keys": ["LOGO", "T"],
+      "bindings": [{"keys": ["1"], "action": "terminal.one"}]
+    },
+    {
+      "keys": ["T", "LOGO"],
+      "bindings": [{"keys": ["2"], "action": "terminal.two"}]
+    }
+  ]
+}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(path, true)
+	if err == nil || !strings.Contains(err.Error(), "duplicate prefix") {
+		t.Fatalf("Load returned %v, want a duplicate-prefix error", err)
 	}
 }
