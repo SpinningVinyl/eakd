@@ -1,10 +1,31 @@
 package configfile
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"syscall"
 )
+
+// Decode reads exactly one JSON value and rejects unknown fields
+func Decode(file *os.File, value any) error {
+	decoder := json.NewDecoder(file)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(value); err != nil {
+		return fmt.Errorf("parse configuration: %w", err)
+	}
+
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("parse configuration: multiple JSON values")
+		}
+		return fmt.Errorf("parse configuration: %w", err)
+	}
+	return nil
+}
 
 // Open opens a configuration file and, unless explicitly disabled for
 // development, validates the exact opened descriptor before returning it.

@@ -1,9 +1,7 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
 	"path/filepath"
 	"slices"
 	"time"
@@ -56,26 +54,10 @@ func Load(path string, allowInsecure bool) (Config, error) {
 	defer file.Close()
 
 	var raw File
-	decoder := json.NewDecoder(file)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&raw); err != nil {
-		return Config{}, fmt.Errorf("parse configuration: %w", err)
-	}
-	if err := ensureJSONEnd(decoder); err != nil {
+	if err := configfile.Decode(file, &raw); err != nil {
 		return Config{}, err
 	}
 	return compile(raw)
-}
-
-func ensureJSONEnd(decoder *json.Decoder) error {
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		if err == nil {
-			return fmt.Errorf("parse configuration: multiple JSON values")
-		}
-		return fmt.Errorf("parse configuration: %w", err)
-	}
-	return nil
 }
 
 func compile(raw File) (Config, error) {
