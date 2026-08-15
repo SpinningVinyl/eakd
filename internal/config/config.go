@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"eak/internal/configfile"
@@ -115,14 +116,10 @@ func compile(raw File) (Config, error) {
 		if err != nil {
 			return Config{}, fmt.Errorf("prefix %d: %w", pi, err)
 		}
-		hasModifier := false
-		for _, key := range keys {
-			hasModifier = hasModifier || keycode.IsLogicalModifier(key)
-		}
-		if !hasModifier {
+		if !slices.ContainsFunc(keys, keycode.IsLogicalModifier) {
 			return Config{}, fmt.Errorf("prefix %d must contain CTRL, SHIFT, ALT, or LOGO", pi)
 		}
-		sig := chordSignature(keys)
+		sig := fmt.Sprint(keys)
 		if prefixSeen[sig] {
 			return Config{}, fmt.Errorf("duplicate prefix %d", pi)
 		}
@@ -138,7 +135,7 @@ func compile(raw File) (Config, error) {
 			if rawBinding.Action == "" {
 				return Config{}, fmt.Errorf("prefix %d binding %d has an empty action", pi, bi)
 			}
-			bindingSig := chordSignature(bindingKeys)
+			bindingSig := fmt.Sprint(bindingKeys)
 			if bindingSeen[bindingSig] {
 				return Config{}, fmt.Errorf("prefix %d has a duplicate binding", pi)
 			}
@@ -185,33 +182,16 @@ func parseChord(names []string) ([]keycode.Logical, error) {
 		seen[key] = true
 		keys = append(keys, key)
 	}
+	slices.Sort(keys)
 	return keys, nil
-}
-
-func chordSignature(keys []keycode.Logical) string {
-	set := make(map[keycode.Logical]bool, len(keys))
-	for _, key := range keys {
-		set[key] = true
-	}
-	result := ""
-	for key := keycode.Logical(0); key <= keycode.LogicalLogo; key++ {
-		if set[key] {
-			result += fmt.Sprintf("%d,", key)
-		}
-	}
-	return result
 }
 
 func subset(a, b []keycode.Logical) bool {
 	if len(a) >= len(b) {
 		return false
 	}
-	set := make(map[keycode.Logical]bool, len(b))
-	for _, key := range b {
-		set[key] = true
-	}
 	for _, key := range a {
-		if !set[key] {
+		if !slices.Contains(b, key) {
 			return false
 		}
 	}
