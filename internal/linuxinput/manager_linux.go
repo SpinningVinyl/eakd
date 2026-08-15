@@ -288,11 +288,7 @@ func (m *Manager) Run(ctx context.Context, output chan<- input.Message) {
 
 	// The monitor is subscribed before enumeration, so additions racing with
 	// the glob remain queued on the netlink descriptor.
-	paths, globErr := filepath.Glob("/dev/input/event*")
-	if globErr != nil {
-		_ = sendMessage(ctx, output, input.Message{Err: fmt.Errorf("enumerate input devices: %w", globErr)})
-		return
-	}
+	paths, _ := filepath.Glob("/dev/input/event*")
 	for _, path := range paths {
 		device, generation, openErr := m.openEnumeratedCandidate(path)
 		if openErr != nil {
