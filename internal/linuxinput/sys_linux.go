@@ -106,31 +106,13 @@ func decodeEvents(data []byte) ([]input.Event, error) {
 	result := make([]input.Event, 0, len(data)/kernelEventSize)
 	for len(data) != 0 {
 		var raw kernelInputEvent
-		if err := binary.Read(bytesReader(data[:kernelEventSize]), binary.NativeEndian, &raw); err != nil {
+		if _, err := binary.Decode(data[:kernelEventSize], binary.NativeEndian, &raw); err != nil {
 			return nil, err
 		}
 		result = append(result, input.Event{Type: raw.Type, Code: raw.Code, Value: raw.Value})
 		data = data[kernelEventSize:]
 	}
 	return result, nil
-}
-
-// byteSliceReader avoids importing bytes and allocating a Reader for every
-// kernel event batch.
-type byteSliceReader []byte
-
-func bytesReader(data []byte) *byteSliceReader {
-	r := byteSliceReader(data)
-	return &r
-}
-
-func (r *byteSliceReader) Read(p []byte) (int, error) {
-	if len(*r) == 0 {
-		return 0, errors.New("end of input event")
-	}
-	n := copy(p, *r)
-	*r = (*r)[n:]
-	return n, nil
 }
 
 func encodeEvent(event input.Event) []byte {
