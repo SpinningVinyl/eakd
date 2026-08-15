@@ -124,9 +124,8 @@ func (s *Server) Publish(action string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for uid, c := range s.clients {
-		copyOfData := append([]byte(nil), data...)
 		select {
-		case c.queue <- copyOfData:
+		case c.queue <- data:
 		default:
 			delete(s.clients, uid)
 			close(c.queue)
