@@ -57,7 +57,7 @@ func TestManagerCoalescesCompositorFeedbackBatch(t *testing.T) {
 		{Code: input.LEDNumLock, Enabled: true},
 		{Code: input.LEDCapsLock, Enabled: false},
 	})
-	if !m.applyPendingLEDs() {
+	if !m.consumePendingLEDs() {
 		t.Fatal("feedback batch did not change lock state")
 	}
 	caps, num, scroll := m.locks.Snapshot()
@@ -118,7 +118,7 @@ func fullMessageChannel() chan input.Message {
 	return output
 }
 
-func TestInitialKeyQueryFailureClosesDevice(t *testing.T) {
+func TestAcceptCandidateClosesDeviceWhenInitialKeyQueryFails(t *testing.T) {
 	pipe := make([]int, 2)
 	if err := syscall.Pipe(pipe); err != nil {
 		t.Fatal(err)
@@ -129,8 +129,16 @@ func TestInitialKeyQueryFailureClosesDevice(t *testing.T) {
 	}
 	m := NewManager("test", log.New(stdio.Discard, "", 0))
 	device := &physicalDevice{path: "/dev/input/event-test", fd: pipe[0]}
-	if _, err := m.initialKeysOrClose(device); err == nil {
-		t.Fatal("EVIOCGKEY unexpectedly succeeded on a pipe")
+	state := &managerState{
+		manager:    m,
+		candidates: make(map[string]*physicalDevice),
+		retries:    make(map[string]acquisitionRetry),
+	}
+	if err := state.acceptCandidate(device); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.candidates) != 0 {
+		t.Fatal("failed candidate remained registered")
 	}
 	if _, err := syscall.Read(pipe[0], make([]byte, 1)); !errors.Is(err, syscall.EBADF) {
 		t.Fatalf("device descriptor remained open after EVIOCGKEY failure: %v", err)
