@@ -30,6 +30,7 @@ type acquisitionRetry struct {
 	scheduled  bool
 }
 
+// begin records an attempt and reports whether the retry limit permits it.
 func (r *acquisitionRetry) begin() bool {
 	if r.attempts >= maxReacquisitionTries {
 		return false
@@ -63,6 +64,26 @@ type LEDUpdate struct {
 	Enabled bool
 }
 
+type managerState struct {
+	manager *Manager
+	ctx     context.Context
+	output  chan<- input.Message
+
+	epfd      int
+	monitorFD int
+
+	byPath         map[string]*physicalDevice
+	byFD           map[int]*physicalDevice
+	candidates     map[string]*physicalDevice
+	retries        map[string]acquisitionRetry
+	latestSequence map[string]uint64
+
+	events             []syscall.EpollEvent
+	readBuffer         []byte
+	udevBuffer         []byte
+	nextCandidateCheck time.Time
+}
+
 func NewManager(virtualName string, logger *log.Logger) *Manager {
 	return &Manager{virtualName: virtualName, logger: logger, ready: make(chan struct{})}
 }
@@ -89,354 +110,463 @@ func (m *Manager) SetLEDs(updates []LEDUpdate) {
 // A single epoll loop preserves ordering without one goroutine per keyboard.
 func (m *Manager) Run(ctx context.Context, output chan<- input.Message) {
 	defer close(output)
-	epfd, err := syscall.EpollCreate1(syscall.EPOLL_CLOEXEC)
-	if err != nil {
-		_ = sendMessage(ctx, output, input.Message{Err: fmt.Errorf("epoll_create1: %w", err)})
-		return
-	}
-	defer syscall.Close(epfd)
-
-	monitorFD, err := openUdevMonitor()
+	state, err := newManagerState(m, ctx, output)
 	if err != nil {
 		_ = sendMessage(ctx, output, input.Message{Err: err})
 		return
 	}
-	defer syscall.Close(monitorFD)
-	if err := addEpollFD(epfd, monitorFD); err != nil {
-		_ = sendMessage(ctx, output, input.Message{Err: fmt.Errorf("epoll add udev monitor: %w", err)})
+	defer state.close()
+
+	if err := state.enumerate(); err != nil {
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			_ = sendMessage(ctx, output, input.Message{Err: err})
+		}
 		return
 	}
-	byPath := make(map[string]*physicalDevice)
-	byFD := make(map[int]*physicalDevice)
-	candidates := make(map[string]*physicalDevice)
-	retries := make(map[string]acquisitionRetry)
-	latestSequence := make(map[string]uint64)
-	defer func() {
-		for _, device := range byPath {
-			m.closeDevice(epfd, device)
-		}
-		for _, device := range candidates {
-			m.closeCandidate(device)
-		}
-	}()
+	close(m.ready)
 
-	syncLEDs := func() {
-		for _, device := range byPath {
-			if err := m.syncDeviceLEDs(device); err != nil {
-				m.logger.Printf("synchronize LEDs on %s: %v", device.path, err)
-			}
+	if err := state.loop(); err != nil &&
+		!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		_ = sendMessage(ctx, output, input.Message{Err: err})
+	}
+}
+
+func newManagerState(m *Manager, ctx context.Context, output chan<- input.Message) (*managerState, error) {
+	epfd, err := syscall.EpollCreate1(syscall.EPOLL_CLOEXEC)
+	if err != nil {
+		return nil, fmt.Errorf("epoll_create1: %w", err)
+	}
+
+	monitorFD, err := openUdevMonitor()
+	if err != nil {
+		_ = syscall.Close(epfd)
+		return nil, err
+	}
+	if err := addEpollFD(epfd, monitorFD); err != nil {
+		_ = syscall.Close(monitorFD)
+		_ = syscall.Close(epfd)
+		return nil, fmt.Errorf("epoll add udev monitor: %w", err)
+	}
+
+	return &managerState{
+		manager:        m,
+		ctx:            ctx,
+		output:         output,
+		epfd:           epfd,
+		monitorFD:      monitorFD,
+		byPath:         make(map[string]*physicalDevice),
+		byFD:           make(map[int]*physicalDevice),
+		candidates:     make(map[string]*physicalDevice),
+		retries:        make(map[string]acquisitionRetry),
+		latestSequence: make(map[string]uint64),
+		events:         make([]syscall.EpollEvent, 32),
+		readBuffer:     make([]byte, kernelEventSize*eventBufferSize),
+		udevBuffer:     make([]byte, udevBufferSize),
+	}, nil
+}
+
+// close releases every keyboard, the udev monitor, and the epoll instance owned by this run.
+func (s *managerState) close() {
+	for _, device := range s.byPath {
+		s.removeActive(device)
+	}
+	for _, device := range s.candidates {
+		s.removeCandidate(device)
+	}
+	_ = syscall.Close(s.monitorFD)
+	_ = syscall.Close(s.epfd)
+}
+
+// removeActive unregisters, ungrabs, closes, and forgets an active keyboard.
+func (s *managerState) removeActive(device *physicalDevice) {
+	s.manager.closeDevice(s.epfd, device)
+	delete(s.byPath, device.path)
+	delete(s.byFD, device.fd)
+}
+
+// removeCandidate closes and forgets an ungrabbed keyboard candidate.
+func (s *managerState) removeCandidate(device *physicalDevice) {
+	s.manager.closeCandidate(device)
+	delete(s.candidates, device.path)
+}
+
+// syncLEDs writes the current lock state to every active keyboard, logging failures.
+func (s *managerState) syncLEDs() {
+	for _, device := range s.byPath {
+		if err := s.manager.syncDeviceLEDs(device); err != nil {
+			s.manager.logger.Printf("synchronize LEDs on %s: %v", device.path, err)
 		}
 	}
-	scheduleRetry := func(path string, generation deviceGeneration) {
-		state := retries[path]
-		if state.generation != generation {
-			state = acquisitionRetry{generation: generation}
-		}
-		if state.attempts >= maxReacquisitionTries {
-			state.scheduled = false
-			retries[path] = state
-			m.logger.Printf("giving up reacquiring %s after %d attempts", path, state.attempts)
-			return
-		}
-		state.deadline = time.Now().Add(acquisitionRetryDelay)
-		state.scheduled = true
-		retries[path] = state
+}
+
+// scheduleRetry arranges another acquisition attempt unless the generation exhausted its limit.
+func (s *managerState) scheduleRetry(path string, generation deviceGeneration) {
+	state := s.retries[path]
+	if state.generation != generation {
+		state = acquisitionRetry{generation: generation}
 	}
-	beginRetry := func(path string, generation deviceGeneration) bool {
-		state, tracked := retries[path]
-		if !tracked {
-			return true
-		}
-		if state.generation != generation {
-			state = acquisitionRetry{generation: generation}
-		}
-		if !state.begin() {
-			return false
-		}
-		retries[path] = state
+	if state.attempts >= maxReacquisitionTries {
+		state.scheduled = false
+		s.retries[path] = state
+		s.manager.logger.Printf("giving up reacquiring %s after %d attempts", path, state.attempts)
+		return
+	}
+	state.deadline = time.Now().Add(acquisitionRetryDelay)
+	state.scheduled = true
+	s.retries[path] = state
+}
+
+// beginRetry records an attempt and reports whether its generation may still be retried.
+func (s *managerState) beginRetry(path string, generation deviceGeneration) bool {
+	state, tracked := s.retries[path]
+	if !tracked {
 		return true
 	}
-	activate := func(device *physicalDevice) error {
-		pressed, acquireErr := m.acquireIdleDevice(epfd, device)
-		if acquireErr != nil {
-			return acquireErr
-		}
-		if pressed == nil {
-			return nil
-		}
-		delete(candidates, device.path)
-		delete(retries, device.path)
-		byPath[device.path] = device
-		byFD[device.fd] = device
-		if err := m.syncDeviceLEDs(device); err != nil {
-			m.logger.Printf("initialize LEDs on %s: %v", device.path, err)
-		}
-		m.logger.Printf("grabbed idle keyboard %s", device.path)
-		return sendMessage(ctx, output, input.Message{
-			Resync: &input.Resync{Device: device.path, Pressed: pressed},
-		})
+	if state.generation != generation {
+		state = acquisitionRetry{generation: generation}
 	}
-	acceptCandidate := func(device *physicalDevice) error {
-		path := device.path
-		generation := device.generation
-		candidates[path] = device
-		pressed, stateErr := m.initialKeysOrClose(device)
-		if stateErr != nil {
-			delete(candidates, path)
-			m.logger.Printf("query initial state for %s; closed for retry: %v", path, stateErr)
-			scheduleRetry(path, generation)
+	if !state.begin() {
+		return false
+	}
+	s.retries[path] = state
+	return true
+}
+
+// activate grabs an idle candidate and announces its initial state.
+// A nil error may also mean the candidate was no longer idle and remains pending.
+func (s *managerState) activate(device *physicalDevice) error {
+	pressed, err := s.manager.acquireIdleDevice(s.epfd, device)
+	if err != nil {
+		return err
+	}
+	if pressed == nil {
+		return nil
+	}
+	delete(s.candidates, device.path)
+	delete(s.retries, device.path)
+	s.byPath[device.path] = device
+	s.byFD[device.fd] = device
+	if err := s.manager.syncDeviceLEDs(device); err != nil {
+		s.manager.logger.Printf("initialize LEDs on %s: %v", device.path, err)
+	}
+	s.manager.logger.Printf("grabbed idle keyboard %s", device.path)
+	return sendMessage(s.ctx, s.output, input.Message{
+		Resync: &input.Resync{Device: device.path, Pressed: pressed},
+	})
+}
+
+// acceptCandidate tracks a keyboard and activates it immediately when idle.
+// Query and acquisition failures are handled locally by scheduling a retry.
+func (s *managerState) acceptCandidate(device *physicalDevice) error {
+	path := device.path
+	generation := device.generation
+	s.candidates[path] = device
+	pressed, err := currentKeys(device.fd)
+	if err != nil {
+		s.removeCandidate(device)
+		s.manager.logger.Printf("query initial state for %s; closed for retry: %v", path, err)
+		s.scheduleRetry(path, generation)
+		return nil
+	}
+	if len(pressed) != 0 {
+		s.manager.logger.Printf("keyboard %s has held keys; waiting for idle state before EVIOCGRAB", path)
+		return nil
+	}
+	if err := s.activate(device); err != nil {
+		s.removeCandidate(device)
+		s.manager.logger.Printf("acquire %s; closed for retry: %v", path, err)
+		s.scheduleRetry(path, generation)
+	}
+	return nil
+}
+
+// consider opens and classifies one device generation for candidacy.
+// Expected open and probe failures are handled locally; an error means processing must stop.
+func (s *managerState) consider(path string, generation deviceGeneration) error {
+	if _, exists := s.byPath[path]; exists {
+		return nil
+	}
+	if _, exists := s.candidates[path]; exists {
+		return nil
+	}
+	device, err := s.manager.openCandidate(path, generation)
+	if err != nil {
+		if errors.Is(err, errEventNodeChanged) {
+			delete(s.retries, path)
+			s.manager.logger.Printf("ignore stale generation for %s: %v", path, err)
 			return nil
 		}
-		if len(pressed) != 0 {
-			m.logger.Printf("keyboard %s has held keys; waiting for idle state before EVIOCGRAB", path)
-			return nil
+		if !errors.Is(err, syscall.EACCES) && !errors.Is(err, syscall.EPERM) {
+			s.manager.logger.Printf("defer %s: %v", path, err)
 		}
-		if err := activate(device); err != nil {
-			delete(candidates, path)
-			m.closeCandidate(device)
-			m.logger.Printf("acquire %s; closed for retry: %v", path, err)
-			scheduleRetry(path, generation)
-			return nil
+		s.scheduleRetry(path, generation)
+		return nil
+	}
+	if device == nil {
+		delete(s.retries, path)
+		return nil
+	}
+	return s.acceptCandidate(device)
+}
+
+// handleAdd reconciles an add event with tracked generations and considers the new device.
+// It returns an error only when processing the event must stop.
+func (s *managerState) handleAdd(event deviceEvent) error {
+	generation := generationFromEvent(event)
+	if state, exists := s.retries[event.path]; exists && state.generation.devPath == generation.devPath && !state.generation.observedAdd {
+		state.generation = adoptObservedAdd(state.generation, generation)
+		generation = state.generation
+		s.retries[event.path] = state
+	}
+	if device := s.byPath[event.path]; device != nil && device.generation.devPath == generation.devPath && !device.generation.observedAdd {
+		device.generation = adoptObservedAdd(device.generation, generation)
+		return nil
+	}
+	if device := s.candidates[event.path]; device != nil && device.generation.devPath == generation.devPath && !device.generation.observedAdd {
+		device.generation = adoptObservedAdd(device.generation, generation)
+		if state, exists := s.retries[event.path]; exists {
+			state.generation = device.generation
+			s.retries[event.path] = state
 		}
 		return nil
 	}
-	consider := func(path string, generation deviceGeneration) error {
-		if _, exists := byPath[path]; exists {
-			return nil
+	if device := s.byPath[event.path]; device != nil {
+		s.removeActive(device)
+		if err := sendMessage(s.ctx, s.output, input.Message{Removed: event.path}); err != nil {
+			return err
 		}
-		if _, exists := candidates[path]; exists {
-			return nil
-		}
-		device, openErr := m.openCandidate(path, generation)
-		if openErr != nil {
-			if errors.Is(openErr, errEventNodeChanged) {
-				delete(retries, path)
-				m.logger.Printf("ignore stale generation for %s: %v", path, openErr)
-				return nil
-			}
-			if !errors.Is(openErr, syscall.EACCES) && !errors.Is(openErr, syscall.EPERM) {
-				m.logger.Printf("defer %s: %v", path, openErr)
-			}
-			scheduleRetry(path, generation)
-			return nil
-		}
-		if device == nil {
-			delete(retries, path)
-			return nil
-		}
-		return acceptCandidate(device)
 	}
-	handleAdd := func(event deviceEvent) error {
-		generation := generationFromEvent(event)
-		if state, exists := retries[event.path]; exists && state.generation.devPath == generation.devPath && !state.generation.observedAdd {
-			state.generation = adoptObservedAdd(state.generation, generation)
-			generation = state.generation
-			retries[event.path] = state
-		}
-		if device := byPath[event.path]; device != nil && device.generation.devPath == generation.devPath && !device.generation.observedAdd {
-			device.generation = adoptObservedAdd(device.generation, generation)
-			return nil
-		}
-		if device := candidates[event.path]; device != nil && device.generation.devPath == generation.devPath && !device.generation.observedAdd {
-			device.generation = adoptObservedAdd(device.generation, generation)
-			if state, exists := retries[event.path]; exists {
-				state.generation = device.generation
-				retries[event.path] = state
-			}
-			return nil
-		}
-		if device := byPath[event.path]; device != nil {
-			m.closeDevice(epfd, device)
-			delete(byPath, event.path)
-			delete(byFD, device.fd)
-			if err := sendMessage(ctx, output, input.Message{Removed: event.path}); err != nil {
-				return err
-			}
-		}
-		if device := candidates[event.path]; device != nil {
-			m.closeCandidate(device)
-			delete(candidates, event.path)
-		}
-		if _, exists := byPath[event.path]; exists {
-			return nil
-		}
-		if _, exists := candidates[event.path]; exists {
-			return nil
-		}
-		if !beginRetry(event.path, generation) {
-			return nil
-		}
-		return consider(event.path, generation)
+	if device := s.candidates[event.path]; device != nil {
+		s.removeCandidate(device)
 	}
-	remove := func(event deviceEvent) error {
-		if state, exists := retries[event.path]; exists && generationMatchesRemoval(state.generation, event) {
-			delete(retries, event.path)
-		}
-		if device := candidates[event.path]; device != nil && generationMatchesRemoval(device.generation, event) {
-			delete(candidates, event.path)
-			m.closeCandidate(device)
-		}
-		device := byPath[event.path]
-		if device == nil || !generationMatchesRemoval(device.generation, event) {
-			return nil
-		}
-		m.closeDevice(epfd, device)
-		delete(byPath, event.path)
-		delete(byFD, device.fd)
-		return sendMessage(ctx, output, input.Message{Removed: event.path})
+	if _, exists := s.byPath[event.path]; exists {
+		return nil
 	}
+	if _, exists := s.candidates[event.path]; exists {
+		return nil
+	}
+	if !s.beginRetry(event.path, generation) {
+		return nil
+	}
+	return s.consider(event.path, generation)
+}
 
+// handleRemove discards matching retry, candidate, and active state for a remove event.
+// It returns an error if announcing an active keyboard's removal fails.
+func (s *managerState) handleRemove(event deviceEvent) error {
+	if state, exists := s.retries[event.path]; exists && generationMatchesRemoval(state.generation, event) {
+		delete(s.retries, event.path)
+	}
+	if device := s.candidates[event.path]; device != nil && generationMatchesRemoval(device.generation, event) {
+		s.removeCandidate(device)
+	}
+	device := s.byPath[event.path]
+	if device == nil || !generationMatchesRemoval(device.generation, event) {
+		return nil
+	}
+	s.removeActive(device)
+	return sendMessage(s.ctx, s.output, input.Message{Removed: event.path})
+}
+
+// enumerate discovers the event nodes present at startup and queues or accepts keyboards.
+// It returns an error when initial ordering cannot be established or processing must stop.
+func (s *managerState) enumerate() error {
 	// The monitor is subscribed before enumeration, so additions racing with
 	// the glob remain queued on the netlink descriptor.
 	paths, _ := filepath.Glob("/dev/input/event*")
 	for _, path := range paths {
-		device, generation, openErr := m.openEnumeratedCandidate(path)
-		if openErr != nil {
-			if errors.Is(openErr, errKernelUeventSequence) {
-				_ = sendMessage(ctx, output, input.Message{
-					Err: fmt.Errorf("establish uevent ordering for initial device %s: %w", path, openErr),
-				})
-				return
+		device, generation, err := s.manager.openEnumeratedCandidate(path)
+		if err != nil {
+			if errors.Is(err, errKernelUeventSequence) {
+				return fmt.Errorf("establish uevent ordering for initial device %s: %w", path, err)
 			}
-			if errors.Is(openErr, errEventNodeChanged) {
-				m.logger.Printf("skip changed initial device %s; queued udev events will identify its replacement", path)
+			if errors.Is(err, errEventNodeChanged) {
+				s.manager.logger.Printf("skip changed initial device %s; queued udev events will identify its replacement", path)
 				continue
 			}
-			m.logger.Printf("defer initial device %s: %v", path, openErr)
+			s.manager.logger.Printf("defer initial device %s: %v", path, err)
 			if generation.devPath != "" {
-				scheduleRetry(path, generation)
+				s.scheduleRetry(path, generation)
 			}
 			continue
 		}
 		if device == nil {
 			continue
 		}
-		if err := acceptCandidate(device); err != nil {
-			return
+		if err := s.acceptCandidate(device); err != nil {
+			return err
 		}
 	}
-	close(m.ready)
-	events := make([]syscall.EpollEvent, 32)
-	readBuffer := make([]byte, kernelEventSize*eventBufferSize)
-	udevBuffer := make([]byte, udevBufferSize)
-	nextCandidateCheck := time.Now()
+	s.nextCandidateCheck = time.Now()
+	return nil
+}
 
+// loop runs device maintenance and dispatches epoll events until cancellation or failure.
+// Context cancellation returns nil; other fatal failures are returned.
+func (s *managerState) loop() error {
 	for {
 		select {
-		case <-ctx.Done():
-			return
+		case <-s.ctx.Done():
+			return nil
 		default:
 		}
-		if m.applyPendingLEDs() {
-			caps, num, scroll := m.locks.Snapshot()
-			m.logger.Printf("compositor lock state caps=%t num=%t scroll=%t", caps, num, scroll)
-			syncLEDs()
-		}
+		s.applyPendingLEDs()
 		now := time.Now()
-		if !now.Before(nextCandidateCheck) {
-			for path, device := range candidates {
-				pressed, stateErr := currentKeys(device.fd)
-				if stateErr != nil {
-					delete(candidates, path)
-					m.closeCandidate(device)
-					if !errors.Is(stateErr, syscall.ENODEV) && !errors.Is(stateErr, syscall.ENOENT) {
-						m.logger.Printf("query pending state for %s; closed for retry: %v", path, stateErr)
-						scheduleRetry(path, device.generation)
-					}
-					continue
-				}
-				if len(pressed) != 0 {
-					continue
-				}
-				if err := activate(device); err != nil {
-					delete(candidates, path)
-					m.closeCandidate(device)
-					m.logger.Printf("acquire %s; closed for retry: %v", path, err)
-					scheduleRetry(path, device.generation)
-				}
-			}
-			nextCandidateCheck = now.Add(candidateCheckInterval)
+		if err := s.checkCandidates(now); err != nil {
+			return err
 		}
-		pendingRetry := false
-		for path, state := range retries {
-			if !state.scheduled {
-				continue
-			}
-			pendingRetry = true
-			if !now.Before(state.deadline) {
-				if !beginRetry(path, state.generation) {
-					continue
-				}
-				if err := consider(path, state.generation); err != nil {
-					return
-				}
-			}
+		pendingRetry, err := s.processRetries(now)
+		if err != nil {
+			return err
 		}
 
-		timeout := 250
-		if len(candidates) != 0 || pendingRetry {
-			timeout = int(candidateCheckInterval / time.Millisecond)
+		count, err := syscall.EpollWait(s.epfd, s.events, s.epollTimeout(pendingRetry))
+		if err != nil {
+			if err == syscall.EINTR {
+				continue
+			}
+			return fmt.Errorf("epoll_wait: %w", err)
 		}
-		count, waitErr := syscall.EpollWait(epfd, events, timeout)
-		if waitErr != nil {
-			if waitErr == syscall.EINTR {
-				continue
-			}
-			_ = sendMessage(ctx, output, input.Message{Err: fmt.Errorf("epoll_wait: %w", waitErr)})
-			return
-		}
-		for _, ready := range events[:count] {
-			if int(ready.Fd) == monitorFD {
-				if ready.Events&(syscall.EPOLLERR|syscall.EPOLLHUP) != 0 {
-					_ = sendMessage(ctx, output, input.Message{Err: errors.New("udev monitor closed")})
-					return
-				}
-				deviceEvents, readErr := readDeviceEvents(monitorFD, udevBuffer)
-				if readErr != nil {
-					_ = sendMessage(ctx, output, input.Message{Err: fmt.Errorf("read udev monitor: %w", readErr)})
-					return
-				}
-				for _, event := range deviceEvents {
-					if !acceptEventSequence(latestSequence, event) {
-						continue
-					}
-					if event.action == "remove" {
-						if err := remove(event); err != nil {
-							return
-						}
-					} else if err := handleAdd(event); err != nil {
-						return
-					}
-				}
-				continue
-			}
-			device := byFD[int(ready.Fd)]
-			if device == nil {
-				continue
-			}
-			removed, readErr := m.readReady(ctx, device, readBuffer, output)
-			if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
-				return
-			}
-			if readErr != nil {
-				m.logger.Printf("read %s: %v", device.path, readErr)
-			}
-			if removed || readErr != nil || ready.Events&(syscall.EPOLLHUP|syscall.EPOLLERR) != 0 {
-				m.closeDevice(epfd, device)
-				delete(byPath, device.path)
-				delete(byFD, device.fd)
-				if err := sendMessage(ctx, output, input.Message{Removed: device.path}); err != nil {
-					return
-				}
-				if !removed {
-					scheduleRetry(device.path, device.generation)
-				}
+		for _, event := range s.events[:count] {
+			if err := s.handleReady(event); err != nil {
+				return err
 			}
 		}
 	}
 }
 
-func (m *Manager) applyPendingLEDs() bool {
+// applyPendingLEDs consumes compositor updates and syncs changed lock state to active keyboards.
+func (s *managerState) applyPendingLEDs() {
+	if !s.manager.consumePendingLEDs() {
+		return
+	}
+	caps, num, scroll := s.manager.locks.Snapshot()
+	s.manager.logger.Printf("compositor lock state caps=%t num=%t scroll=%t", caps, num, scroll)
+	s.syncLEDs()
+}
+
+// checkCandidates activates candidates that have become idle and reschedules failed acquisitions.
+// It returns an error only when candidate processing must stop.
+func (s *managerState) checkCandidates(now time.Time) error {
+	if now.Before(s.nextCandidateCheck) {
+		return nil
+	}
+	for _, device := range s.candidates {
+		pressed, err := currentKeys(device.fd)
+		if err != nil {
+			s.removeCandidate(device)
+			if !errors.Is(err, syscall.ENODEV) && !errors.Is(err, syscall.ENOENT) {
+				s.manager.logger.Printf("query pending state for %s; closed for retry: %v", device.path, err)
+				s.scheduleRetry(device.path, device.generation)
+			}
+			continue
+		}
+		if len(pressed) != 0 {
+			continue
+		}
+		if err := s.activate(device); err != nil {
+			s.removeCandidate(device)
+			s.manager.logger.Printf("acquire %s; closed for retry: %v", device.path, err)
+			s.scheduleRetry(device.path, device.generation)
+		}
+	}
+	s.nextCandidateCheck = now.Add(candidateCheckInterval)
+	return nil
+}
+
+// processRetries runs due acquisition retries.
+// It reports whether any retry remains scheduled and returns a fatal processing error.
+func (s *managerState) processRetries(now time.Time) (bool, error) {
+	pending := false
+	for path, state := range s.retries {
+		if !state.scheduled {
+			continue
+		}
+		pending = true
+		if now.Before(state.deadline) {
+			continue
+		}
+		if !s.beginRetry(path, state.generation) {
+			continue
+		}
+		if err := s.consider(path, state.generation); err != nil {
+			return pending, err
+		}
+	}
+	return pending, nil
+}
+
+// epollTimeout returns a short timeout while work is pending, or the idle timeout otherwise.
+func (s *managerState) epollTimeout(pendingRetry bool) int {
+	if len(s.candidates) != 0 || pendingRetry {
+		return int(candidateCheckInterval / time.Millisecond)
+	}
+	return 250
+}
+
+// handleReady dispatches one epoll event to the udev or keyboard handler.
+// It returns an error when the run must stop.
+func (s *managerState) handleReady(ready syscall.EpollEvent) error {
+	if int(ready.Fd) == s.monitorFD {
+		return s.handleUdevReady(ready)
+	}
+	return s.handleDeviceReady(ready)
+}
+
+// handleUdevReady drains and applies sequenced device-management events.
+// It returns an error if the monitor fails or an event cannot be processed.
+func (s *managerState) handleUdevReady(ready syscall.EpollEvent) error {
+	if ready.Events&(syscall.EPOLLERR|syscall.EPOLLHUP) != 0 {
+		return errors.New("udev monitor closed")
+	}
+	events, err := readDeviceEvents(s.monitorFD, s.udevBuffer)
+	if err != nil {
+		return fmt.Errorf("read udev monitor: %w", err)
+	}
+	for _, event := range events {
+		if !acceptEventSequence(s.latestSequence, event) {
+			continue
+		}
+		if event.action == "remove" {
+			if err := s.handleRemove(event); err != nil {
+				return err
+			}
+		} else if err := s.handleAdd(event); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// handleDeviceReady drains one active keyboard and removes it when disconnected or faulty.
+// It returns an error only when cancellation or output delivery must stop the run.
+func (s *managerState) handleDeviceReady(ready syscall.EpollEvent) error {
+	device := s.byFD[int(ready.Fd)]
+	if device == nil {
+		return nil
+	}
+	removed, err := s.manager.readReady(s.ctx, device, s.readBuffer, s.output)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	if err != nil {
+		s.manager.logger.Printf("read %s: %v", device.path, err)
+	}
+	if !removed && err == nil && ready.Events&(syscall.EPOLLHUP|syscall.EPOLLERR) == 0 {
+		return nil
+	}
+	s.removeActive(device)
+	if sendErr := sendMessage(s.ctx, s.output, input.Message{Removed: device.path}); sendErr != nil {
+		return sendErr
+	}
+	if !removed {
+		s.scheduleRetry(device.path, device.generation)
+	}
+	return nil
+}
+
+// consumePendingLEDs applies queued updates and reports whether the effective lock state changed.
+func (m *Manager) consumePendingLEDs() bool {
 	m.ledMu.Lock()
 	pending := m.ledPending
 	dirty := m.ledDirty
@@ -452,15 +582,8 @@ func (m *Manager) applyPendingLEDs() bool {
 	return changed
 }
 
-func (m *Manager) initialKeysOrClose(device *physicalDevice) (map[uint16]bool, error) {
-	pressed, err := currentKeys(device.fd)
-	if err != nil {
-		m.closeCandidate(device)
-		return nil, err
-	}
-	return pressed, nil
-}
-
+// Opens and probes a known device generation. A nil device with no error means
+// the node should be ignored; returned devices own their fd.
 func (m *Manager) openCandidate(path string, generation deviceGeneration) (*physicalDevice, error) {
 	fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
 	if err != nil {
@@ -473,11 +596,11 @@ func (m *Manager) openCandidate(path string, generation deviceGeneration) (*phys
 	return m.probeCandidate(path, generation, fd)
 }
 
-// openEnumeratedCandidate establishes which device an event-node descriptor
-// refers to before probing it. The sequence number is sampled only after the
-// descriptor and its sysfs DEVPATH have been obtained. Comparing fstat(2) on
-// the descriptor with stat(2) on the pathname then proves that the pathname
-// still names that descriptor's device at the end of the observation window.
+// Establishes which device an event-node descriptor refers to before probing it.
+// The sequence number is sampled only after the descriptor and its sysfs DEVPATH
+// have been obtained. Comparing fstat(2) on the descriptor with stat(2) on the
+// pathname proves that the pathname still names that descriptor's device at the end
+// of the observation window.
 func (m *Manager) openEnumeratedCandidate(path string) (*physicalDevice, deviceGeneration, error) {
 	fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
 	if err != nil {
@@ -556,6 +679,8 @@ func sameDeviceNode(left, right syscall.Stat_t) bool {
 	return left.Dev == right.Dev && left.Ino == right.Ino && left.Rdev == right.Rdev
 }
 
+// Identifies whether an open descriptor is a usable physical keyboard.
+// A nil device with no error means it should be ignored; errors close the supplied fd.
 func (m *Manager) probeCandidate(path string, generation deviceGeneration, fd int) (*physicalDevice, error) {
 	closeOnError := true
 	defer func() {
@@ -597,11 +722,11 @@ func classifyKeyboardCapabilities(capabilities []byte, queryErr error) (bool, er
 	return looksLikeKeyboard(capabilities) || looksLikeNumpad(capabilities), nil
 }
 
-// acquireIdleDevice performs the idle check before EVIOCGRAB. The candidate's
-// pre-grab event queue is discarded because those events were also delivered
-// directly to the compositor. A second state query ensures that draining did
+// Performs the idle check before EVIOCGRAB. The candidate's pre-grab event
+// queue is discarded because those events were also delivered directly to the
+// userspace input stack. A second state query ensures that draining did
 // not race with a key press. A nil map means the device became non-idle and
-// must remain an ungrabbed candidate.
+// must remain an ungrabbed candidate; an error means acquisition failed.
 func (m *Manager) acquireIdleDevice(epfd int, device *physicalDevice) (map[uint16]bool, error) {
 	pressed, err := currentKeys(device.fd)
 	if err != nil {
@@ -630,6 +755,9 @@ func (m *Manager) acquireIdleDevice(epfd int, device *physicalDevice) (map[uint1
 	return pressed, nil
 }
 
+// Drains available events from one keyboard and emits complete frames or a resync.
+// The boolean reports device disappearance or EOF; the error reports read, decode,
+// or send failure.
 func (m *Manager) readReady(ctx context.Context, device *physicalDevice, buffer []byte, output chan<- input.Message) (bool, error) {
 	for {
 		count, err := syscall.Read(device.fd, buffer)
@@ -691,6 +819,8 @@ func sendMessage(ctx context.Context, output chan<- input.Message, message input
 	}
 }
 
+// Writes known lock states for the LEDs supported by one keyboard. It returns the first
+// write failure, or nil after a successful or unnecessary sync.
 func (m *Manager) syncDeviceLEDs(device *physicalDevice) error {
 	wrote := false
 	for code := uint16(0); code <= input.LEDScrollLock; code++ {
@@ -712,12 +842,14 @@ func (m *Manager) syncDeviceLEDs(device *physicalDevice) error {
 	return nil
 }
 
+// Removes an active keyboard from epoll, releases its grab, and closes it.
 func (m *Manager) closeDevice(epfd int, device *physicalDevice) {
 	_ = syscall.EpollCtl(epfd, syscall.EPOLL_CTL_DEL, device.fd, nil)
 	_ = grab(device.fd, false)
 	_ = syscall.Close(device.fd)
 }
 
+// Defensively releases and closes a candidate keyboard.
 func (m *Manager) closeCandidate(device *physicalDevice) {
 	// EVIOCGRAB(0) is defensive: most candidates have never been grabbed, but
 	// it also makes every failed acquisition path safe after future changes.
