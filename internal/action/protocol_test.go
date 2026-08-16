@@ -15,4 +15,7 @@ func TestValidateIDLength(t *testing.T) {
 	if err := ValidateID(strings.Repeat("é", MaxActionIDBytes/2+1)); err == nil {
 		t.Fatal("ValidateID counted characters instead of encoded bytes")
 	}
+	if err := ValidateID(" \t"); err == nil {
+		t.Fatal("ValidateID accepted a blank string")
+	}
 }
