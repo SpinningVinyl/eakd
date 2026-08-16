@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"eak/internal/action"
 	"eak/internal/configfile"
 )
 
@@ -95,6 +96,9 @@ func compile(raw File) (Config, error) {
 	for id, rawAction := range raw.Actions {
 		if strings.TrimSpace(id) == "" {
 			return Config{}, fmt.Errorf("action ID must not be empty")
+		}
+		if err := action.ValidateID(id); err != nil {
+			return Config{}, err
 		}
 		if rawAction.WorkingDirectory != "" && !filepath.IsAbs(rawAction.WorkingDirectory) {
 			return Config{}, fmt.Errorf("action %q: working_directory must be absolute", id)

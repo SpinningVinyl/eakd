@@ -4,7 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+
+	"eak/internal/action"
 )
 
 func TestLoadClientConfiguration(t *testing.T) {
@@ -44,5 +47,16 @@ func TestCompileRejectsAmbiguousActionForms(t *testing.T) {
 		if _, err := compile(raw); err == nil {
 			t.Fatalf("accepted invalid configuration: %#v", raw)
 		}
+	}
+}
+
+func TestCompileRejectsOverlongActionID(t *testing.T) {
+	id := strings.Repeat("a", action.MaxActionIDBytes+1)
+	raw := File{Actions: map[string]FileAction{
+		id: {Type: "exec", Command: []string{"true"}},
+	}}
+
+	if _, err := compile(raw); err == nil || !strings.Contains(err.Error(), "maximum is 1024") {
+		t.Fatalf("compile returned %v, want an action-ID length error", err)
 	}
 }
