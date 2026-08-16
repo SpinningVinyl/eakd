@@ -57,7 +57,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	if len(s.allowed) == 0 {
 		return errors.New("allowed_uids must contain at least one eakc user")
 	}
-	_ = os.Remove(s.path)
+	if err := removeSocket(s.path); err != nil {
+		return err
+	}
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: s.path, Net: "unix"})
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", s.path, err)
@@ -190,4 +192,21 @@ func peerUID(connection *net.UnixConn) (uint32, error) {
 		return 0, err
 	}
 	return uid, controlErr
+}
+
+func removeSocket(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect socket path %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("refusing to remove non-socket entry at %s", path)
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("error removing stale socket: %w", err)
+	}
+	return nil
 }
