@@ -123,3 +123,69 @@ func TestUnknownContinuationIsReplayedWithoutPrefix(t *testing.T) {
 		t.Fatalf("unknown continuation was not replayed: %#v", result)
 	}
 }
+
+func TestFrameAtCandidateDeadlineCannotAdvancePrefix(t *testing.T) {
+	e := New(testConfig())
+	now := time.Unix(1, 0)
+	e.HandleFrame(keyFrame("kbd0", keycode.KeyLeftMeta, 1), now)
+
+	result := e.HandleFrame(keyFrame("kbd0", keycode.KeyT, 1), now.Add(testConfig().CandidateTimeout))
+	if len(result.Actions) != 0 {
+		t.Fatalf("expired prefix emitted actions: %#v", result.Actions)
+	}
+	if len(result.Forward) != 2 ||
+		result.Forward[0].Events[0].Code != keycode.KeyLeftMeta ||
+		result.Forward[1].Events[0].Code != keycode.KeyT {
+		t.Fatalf("expired prefix frames were not forwarded in order: %#v", result.Forward)
+	}
+}
+
+func TestFrameAtSequenceDeadlineCannotStartContinuation(t *testing.T) {
+	e := New(testConfig())
+	now := time.Unix(1, 0)
+	completeTestPrefix(e, now)
+	deadline, exists := e.Deadline()
+	if !exists {
+		t.Fatal("recognized prefix has no sequence deadline")
+	}
+
+	result := e.HandleFrame(keyFrame("kbd0", keycode.Key1, 1), deadline)
+	if len(result.Actions) != 0 {
+		t.Fatalf("late continuation emitted actions: %#v", result.Actions)
+	}
+	if len(result.Forward) != 1 || result.Forward[0].Events[0].Code != keycode.Key1 {
+		t.Fatalf("late continuation was not forwarded: %#v", result.Forward)
+	}
+}
+
+func TestReleaseAtSequenceDeadlineCannotCompleteContinuation(t *testing.T) {
+	e := New(testConfig())
+	now := time.Unix(1, 0)
+	completeTestPrefix(e, now)
+	deadline, exists := e.Deadline()
+	if !exists {
+		t.Fatal("recognized prefix has no sequence deadline")
+	}
+	e.HandleFrame(keyFrame("kbd0", keycode.Key1, 1), deadline.Add(-time.Millisecond))
+
+	result := e.HandleFrame(keyFrame("kbd0", keycode.Key1, 0), deadline)
+	if len(result.Actions) != 0 {
+		t.Fatalf("expired continuation emitted actions: %#v", result.Actions)
+	}
+	if len(result.Forward) != 2 ||
+		result.Forward[0].Events[0].Value != 1 ||
+		result.Forward[1].Events[0].Value != 0 {
+		t.Fatalf("expired continuation was not replayed in order: %#v", result.Forward)
+	}
+}
+
+func completeTestPrefix(e *Engine, now time.Time) {
+	for i, frame := range []input.Frame{
+		keyFrame("kbd0", keycode.KeyLeftMeta, 1),
+		keyFrame("kbd0", keycode.KeyT, 1),
+		keyFrame("kbd0", keycode.KeyT, 0),
+		keyFrame("kbd0", keycode.KeyLeftMeta, 0),
+	} {
+		e.HandleFrame(frame, now.Add(time.Duration(i)*time.Millisecond))
+	}
+}

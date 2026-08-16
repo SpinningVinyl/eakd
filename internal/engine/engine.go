@@ -71,6 +71,14 @@ func New(cfg config.Config) *Engine {
 // HandleFrame updates authoritative physical state, advances the prefix
 // machine, and returns frames that are safe to expose through uinput.
 func (e *Engine) HandleFrame(frame input.Frame, now time.Time) Result {
+	result := e.expire(now)
+	next := e.handleFrame(frame, now)
+	result.Forward = append(result.Forward, next.Forward...)
+	result.Actions = append(result.Actions, next.Actions...)
+	return result
+}
+
+func (e *Engine) handleFrame(frame input.Frame, now time.Time) Result {
 	transitions := e.applyFrame(frame)
 	if len(transitions) == 0 {
 		if e.mode == modePrefixCandidate || e.mode == modeBindingCandidate {
@@ -129,6 +137,10 @@ func (e *Engine) HandleFrame(frame input.Frame, now time.Time) Result {
 // is replayed. A recognized prefix remains consumed, while an incomplete
 // continuation is replayed.
 func (e *Engine) HandleTimeout(now time.Time) Result {
+	return e.expire(now)
+}
+
+func (e *Engine) expire(now time.Time) Result {
 	if e.deadline.IsZero() || now.Before(e.deadline) {
 		return Result{}
 	}
