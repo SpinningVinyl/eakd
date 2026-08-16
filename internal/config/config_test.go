@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"eak/internal/action"
 	"eak/internal/keycode"
 )
 
@@ -149,5 +150,22 @@ func TestLoadRejectsDuplicatePrefixWithDifferentKeyOrder(t *testing.T) {
 	_, err := Load(path, true)
 	if err == nil || !strings.Contains(err.Error(), "duplicate prefix") {
 		t.Fatalf("Load returned %v, want a duplicate-prefix error", err)
+	}
+}
+
+func TestCompileRejectsOverlongActionID(t *testing.T) {
+	raw := File{
+		AllowedUIDs: []uint32{1000},
+		Prefixes: []FilePrefix{{
+			Keys: []string{"LOGO", "T"},
+			Bindings: []FileBinding{{
+				Keys:   []string{"1"},
+				Action: strings.Repeat("a", action.MaxActionIDBytes+1),
+			}},
+		}},
+	}
+
+	if _, err := compile(raw); err == nil || !strings.Contains(err.Error(), "maximum is 1024") {
+		t.Fatalf("compile returned %v, want an action-ID length error", err)
 	}
 }

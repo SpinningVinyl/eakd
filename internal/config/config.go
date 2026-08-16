@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"eak/internal/action"
 	"eak/internal/configfile"
 	"eak/internal/keycode"
 )
@@ -119,8 +120,8 @@ func compile(raw File) (Config, error) {
 			if err != nil {
 				return Config{}, fmt.Errorf("prefix %d binding %d: %w", pi, bi, err)
 			}
-			if rawBinding.Action == "" {
-				return Config{}, fmt.Errorf("prefix %d binding %d has an empty action", pi, bi)
+			if err := action.ValidateID(rawBinding.Action); err != nil {
+				return Config{}, fmt.Errorf("prefix %d binding %d: %w", pi, bi, err)
 			}
 			bindingSig := chordSignature(bindingKeys)
 			if bindingSeen[bindingSig] {
