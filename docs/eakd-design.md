@@ -219,20 +219,19 @@ Only modifier keys can initiate prefix candidacy. Without that restriction,
 configuring `LOGO+T` would delay every ordinary `T` while the daemon waited to
 see whether Logo followed it.
 
-## Modifier reference counts
+## Keypress reference counts
 
 `internal/linuxinput/forwarder_linux.go` tracks keys forwarded from each
-physical device. For the eight standard left/right Ctrl, Shift, Alt and Logo
-codes it also maintains a count across devices:
+physical device and maintains a count for every keycode across devices:
 
 - The first physical press emits one virtual press.
-- Additional presses of the same modifier code update the count but emit
+- Additional presses of the same keycode update the count but emit
   nothing.
 - Releases emit nothing while the count remains nonzero.
 - The last release emits the virtual release.
 
-Thus releasing Left Shift on one keyboard cannot release virtual Left Shift
-while another physical keyboard still holds it.
+Thus releasing a key on one keyboard cannot release the virtual key while
+another physical keyboard still holds the same keycode.
 
 ## Global lock and LED state
 

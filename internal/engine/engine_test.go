@@ -124,6 +124,25 @@ func TestUnknownContinuationIsReplayedWithoutPrefix(t *testing.T) {
 	}
 }
 
+func TestExtraTransitionInCompletionFrameReplaysCandidate(t *testing.T) {
+	e := New(testConfig())
+	now := time.Unix(1, 0)
+	completeTestPrefix(e, now)
+	e.HandleFrame(keyFrame("kbd0", keycode.Key1, 1), now.Add(5*time.Millisecond))
+
+	result := e.HandleFrame(input.Frame{Device: "kbd0", Events: []input.Event{
+		{Type: input.EVKey, Code: keycode.Key1, Value: 0},
+		{Type: input.EVKey, Code: keycode.KeyX, Value: 1},
+		{Type: input.EVSyn, Code: input.SynReport},
+	}}, now.Add(6*time.Millisecond))
+	if len(result.Actions) != 0 {
+		t.Fatalf("ambiguous completion emitted actions: %#v", result.Actions)
+	}
+	if len(result.Forward) != 2 || result.Forward[1].Events[1].Code != keycode.KeyX {
+		t.Fatalf("candidate frame was not replayed intact: %#v", result.Forward)
+	}
+}
+
 func TestFrameAtCandidateDeadlineCannotAdvancePrefix(t *testing.T) {
 	e := New(testConfig())
 	now := time.Unix(1, 0)
