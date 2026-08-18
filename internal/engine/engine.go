@@ -116,14 +116,34 @@ func (e *Engine) handleFrame(frame input.Frame, now time.Time) Result {
 	for _, tr := range transitions {
 		switch e.mode {
 		case modePrefixCandidate:
-			e.advancePrefix(tr, now, &result)
+			e.advancePrefix(tr, &result)
 		case modeBindingCandidate:
 			e.advanceBinding(tr, &result)
 		}
 		// A failed sequence may flush the complete frame. Do not begin a new
 		// candidate from a later event in that already-forwarded frame.
-		if len(result.Forward) != 0 || len(result.Actions) != 0 {
+		if len(result.Forward) != 0 {
 			break
+		}
+	}
+	// Complete a chord only after every transition in its atomic frame has
+	// been validated. Any extra key instead fails and replays the candidate.
+	if len(result.Forward) == 0 {
+		switch e.mode {
+		case modePrefixCandidate:
+			if e.seq.matched >= 0 && chordReleased(e.cfg.Prefixes[e.seq.matched].Keys, e.seq.held) {
+				e.activePrefix = e.seq.matched
+				e.mode = modeAwaitBinding
+				e.seq = sequence{}
+				e.buffer = nil // consume the complete prefix
+				e.deadline = now.Add(e.cfg.SequenceTimeout)
+			}
+		case modeBindingCandidate:
+			bindings := e.cfg.Prefixes[e.activePrefix].Bindings
+			if e.seq.matched >= 0 && chordReleased(bindings[e.seq.matched].Keys, e.seq.held) {
+				result.Actions = append(result.Actions, bindings[e.seq.matched].Action)
+				e.toIdle() // consume the continuation
+			}
 		}
 	}
 
@@ -201,17 +221,19 @@ func (e *Engine) applyFrame(frame input.Frame) []transition {
 		logical := keycode.Canonical(event.Code)
 		switch event.Value {
 		case 1:
-			if !deviceState[event.Code] {
-				deviceState[event.Code] = true
-				e.logicalCount[logical]++
-			}
-		case 0:
 			if deviceState[event.Code] {
-				delete(deviceState, event.Code)
-				e.logicalCount[logical]--
-				if e.logicalCount[logical] <= 0 {
-					delete(e.logicalCount, logical)
-				}
+				continue
+			}
+			deviceState[event.Code] = true
+			e.logicalCount[logical]++
+		case 0:
+			if !deviceState[event.Code] {
+				continue
+			}
+			delete(deviceState, event.Code)
+			e.logicalCount[logical]--
+			if e.logicalCount[logical] <= 0 {
+				delete(e.logicalCount, logical)
 			}
 		case 2:
 			// Repeats affect neither physical nor matching state.
@@ -237,20 +259,12 @@ func (e *Engine) startPrefixCandidate(first keycode.Logical, now time.Time) {
 	e.deadline = now.Add(e.cfg.CandidateTimeout)
 }
 
-func (e *Engine) advancePrefix(tr transition, now time.Time, result *Result) {
+func (e *Engine) advancePrefix(tr transition, result *Result) {
 	if !e.advanceSequence(tr, func(index int) []keycode.Logical {
 		return e.cfg.Prefixes[index].Keys
 	}) {
 		result.Forward = append(result.Forward, e.buffer...)
 		e.toIdle()
-		return
-	}
-	if e.seq.matched >= 0 && chordReleased(e.cfg.Prefixes[e.seq.matched].Keys, e.seq.held) {
-		e.activePrefix = e.seq.matched
-		e.mode = modeAwaitBinding
-		e.seq = sequence{}
-		e.buffer = nil // consume the complete prefix
-		e.deadline = now.Add(e.cfg.SequenceTimeout)
 	}
 }
 
@@ -270,11 +284,6 @@ func (e *Engine) advanceBinding(tr transition, result *Result) {
 	if !e.advanceSequence(tr, func(index int) []keycode.Logical { return bindings[index].Keys }) {
 		result.Forward = append(result.Forward, e.buffer...)
 		e.toIdle()
-		return
-	}
-	if e.seq.matched >= 0 && chordReleased(bindings[e.seq.matched].Keys, e.seq.held) {
-		result.Actions = append(result.Actions, bindings[e.seq.matched].Action)
-		e.toIdle() // consume the continuation
 	}
 }
 
@@ -285,6 +294,10 @@ func (e *Engine) advanceSequence(tr transition, chord func(int) []keycode.Logica
 		return true
 	}
 	if tr.value == 1 {
+		// reject a candidate when a sequence keypress is not the first global press
+		if tr.countAfter != 1 {
+			return false
+		}
 		e.seq.seen[tr.key] = true
 		e.seq.held[tr.key] = true
 		filtered := e.seq.possible[:0]

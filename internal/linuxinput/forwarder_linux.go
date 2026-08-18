@@ -15,7 +15,7 @@ import (
 type Forwarder struct {
 	output eventWriter
 	down   map[string]map[uint16]bool
-	mods   map[uint16]int
+	counts map[uint16]int
 }
 
 type eventWriter interface {
@@ -26,7 +26,7 @@ func NewForwarder(output eventWriter) *Forwarder {
 	return &Forwarder{
 		output: output,
 		down:   make(map[string]map[uint16]bool),
-		mods:   make(map[uint16]int),
+		counts: make(map[uint16]int),
 	}
 }
 
@@ -65,35 +65,27 @@ func (f *Forwarder) Frame(frame input.Frame) error {
 }
 
 func (f *Forwarder) keyEvent(device map[uint16]bool, event input.Event) (bool, input.Event) {
-	modifier := keycode.IsPhysicalModifier(event.Code)
 	switch event.Value {
 	case 1:
 		if device[event.Code] {
 			return false, event
 		}
 		device[event.Code] = true
-		if modifier {
-			f.mods[event.Code]++
-			if f.mods[event.Code] > 1 {
-				return false, event
-			}
-		}
-		return true, event
+		f.counts[event.Code]++
+		return f.counts[event.Code] == 1, event
 	case 0:
 		if !device[event.Code] {
 			return false, event
 		}
 		delete(device, event.Code)
-		if modifier {
-			f.mods[event.Code]--
-			if f.mods[event.Code] > 0 {
-				return false, event
-			}
-			delete(f.mods, event.Code)
+		f.counts[event.Code]--
+		if f.counts[event.Code] > 0 {
+			return false, event
 		}
+		delete(f.counts, event.Code)
 		return true, event
 	case 2:
-		if !device[event.Code] || modifier {
+		if !device[event.Code] || keycode.IsPhysicalModifier(event.Code) {
 			return false, event
 		}
 		return true, event

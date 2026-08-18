@@ -841,6 +841,22 @@ func (m *Manager) acquireIdleDevice(epfd int, device *physicalDevice) (map[uint1
 	if err := grab(device.fd, true); err != nil {
 		return nil, fmt.Errorf("EVIOCGRAB: %w", err)
 	}
+	// post-grab state check to detect a keypress that raced with EVIOCGRAB
+	pressed, err = currentKeys(device.fd)
+	if err != nil {
+		_ = grab(device.fd, false)
+		return nil, fmt.Errorf("EVIOCGKEY after EVIOCGRAB: %w", err)
+	}
+	// if EVIOCGKEY reports pressed keys after EVIOCGRAB, keep in the candidate pool;
+	// a pre-grab keypress may have already reached the userspace input stack,
+	// ungrabbing ensures that the corresponding release arrives through
+	// the same device
+	if len(pressed) != 0 {
+		if err := grab(device.fd, false); err != nil {
+			return nil, fmt.Errorf("release non-idle device: %w", err)
+		}
+		return nil, nil
+	}
 	if err := addEpollFD(epfd, device.fd); err != nil {
 		_ = grab(device.fd, false)
 		return nil, fmt.Errorf("epoll add keyboard: %w", err)
