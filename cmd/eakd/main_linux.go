@@ -69,13 +69,7 @@ func run(parent context.Context, cfg config.Config, logger *log.Logger) error {
 		return err
 	}
 	defer virtual.Close()
-	manager := linuxinput.NewManager(virtual.Name(), logger)
-	feedbackErrors := make(chan error, 1)
-	feedbackDone := make(chan struct{})
-	go func() {
-		feedbackErrors <- virtual.DrainFeedback(ctx, manager.SetLEDs)
-		close(feedbackDone)
-	}()
+	manager := linuxinput.NewManager(virtual, logger)
 
 	processor := engine.New(cfg)
 	forwarder := linuxinput.NewForwarder(virtual)
@@ -92,7 +86,6 @@ func run(parent context.Context, cfg config.Config, logger *log.Logger) error {
 	defer func() {
 		cancel()
 		<-managerDone
-		<-feedbackDone
 	}()
 
 	var timer *time.Timer
@@ -163,11 +156,6 @@ func run(parent context.Context, cfg config.Config, logger *log.Logger) error {
 				return err
 			}
 		case err := <-serverErrors:
-			if err != nil {
-				return err
-			}
-			return nil
-		case err := <-feedbackErrors:
 			if err != nil {
 				return err
 			}
