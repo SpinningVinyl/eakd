@@ -4,9 +4,14 @@ package action
 
 import (
 	"context"
+	"errors"
 	stdio "io"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -20,6 +25,28 @@ func TestServerDoesNotBecomeReadyWhenStartupValidationFails(t *testing.T) {
 	case <-server.Ready():
 		t.Fatal("server became ready after startup failure")
 	default:
+	}
+}
+
+func TestRemoveSocketRefusesActiveAndRemovesStaleSockets(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "eakd.sock")
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener.SetUnlinkOnClose(false)
+
+	if err := removeSocket(path); err == nil || !strings.Contains(err.Error(), "active socket") {
+		t.Fatalf("removeSocket(active) = %v", err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeSocket(path); err != nil {
+		t.Fatalf("removeSocket(stale) = %v", err)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, syscall.ENOENT) {
+		t.Fatalf("socket still exists after removal: %v", err)
 	}
 }
 
