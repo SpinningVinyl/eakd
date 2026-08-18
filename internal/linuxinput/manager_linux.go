@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
-	"sync"
 	"syscall"
 	"time"
 
@@ -50,18 +49,10 @@ type physicalDevice struct {
 }
 
 type Manager struct {
-	virtualName string
-	logger      *log.Logger
-	ready       chan struct{}
-	locks       LockState
-	ledMu       sync.Mutex
-	ledPending  [3]bool
-	ledDirty    [3]bool
-}
-
-type LEDUpdate struct {
-	Code    uint16
-	Enabled bool
+	virtual *VirtualKeyboard
+	logger  *log.Logger
+	ready   chan struct{}
+	locks   LockState
 }
 
 type managerState struct {
@@ -71,6 +62,10 @@ type managerState struct {
 
 	epfd      int
 	monitorFD int
+	wakeRead  int
+	wakeWrite int
+	stopWake  func() bool
+	wakeDone  <-chan struct{}
 
 	byPath         map[string]*physicalDevice
 	byFD           map[int]*physicalDevice
@@ -84,30 +79,17 @@ type managerState struct {
 	nextCandidateCheck time.Time
 }
 
-func NewManager(virtualName string, logger *log.Logger) *Manager {
-	return &Manager{virtualName: virtualName, logger: logger, ready: make(chan struct{})}
+func NewManager(virtual *VirtualKeyboard, logger *log.Logger) *Manager {
+	return &Manager{virtual: virtual, logger: logger, ready: make(chan struct{})}
 }
 
 // Ready is closed after the udev monitor is active and initial enumeration has
 // finished. A keyboard with held keys may still be waiting for an idle handoff.
 func (m *Manager) Ready() <-chan struct{} { return m.ready }
 
-// SetLEDs records one compositor feedback batch without blocking the virtual
-// keyboard reader. Updates are coalesced and applied by the epoll owner.
-func (m *Manager) SetLEDs(updates []LEDUpdate) {
-	m.ledMu.Lock()
-	for _, update := range updates {
-		if update.Code > input.LEDScrollLock {
-			continue
-		}
-		m.ledPending[update.Code] = update.Enabled
-		m.ledDirty[update.Code] = true
-	}
-	m.ledMu.Unlock()
-}
-
-// Run owns every physical descriptor, the udev monitor, and the epoll instance.
-// A single epoll loop preserves ordering without one goroutine per keyboard.
+// Run owns every physical descriptor, the udev monitor, and the epoll instance,
+// and reads the caller-owned virtual descriptor. A single epoll loop preserves
+// ordering without one goroutine per keyboard.
 func (m *Manager) Run(ctx context.Context, output chan<- input.Message) {
 	defer close(output)
 	state, err := newManagerState(m, ctx, output)
@@ -132,6 +114,9 @@ func (m *Manager) Run(ctx context.Context, output chan<- input.Message) {
 }
 
 func newManagerState(m *Manager, ctx context.Context, output chan<- input.Message) (*managerState, error) {
+	if m.virtual == nil || m.virtual.fd < 0 {
+		return nil, errors.New("virtual keyboard is unavailable")
+	}
 	epfd, err := syscall.EpollCreate1(syscall.EPOLL_CLOEXEC)
 	if err != nil {
 		return nil, fmt.Errorf("epoll_create1: %w", err)
@@ -148,12 +133,14 @@ func newManagerState(m *Manager, ctx context.Context, output chan<- input.Messag
 		return nil, fmt.Errorf("epoll add udev monitor: %w", err)
 	}
 
-	return &managerState{
+	state := &managerState{
 		manager:        m,
 		ctx:            ctx,
 		output:         output,
 		epfd:           epfd,
 		monitorFD:      monitorFD,
+		wakeRead:       -1,
+		wakeWrite:      -1,
 		byPath:         make(map[string]*physicalDevice),
 		byFD:           make(map[int]*physicalDevice),
 		candidates:     make(map[string]*physicalDevice),
@@ -162,19 +149,78 @@ func newManagerState(m *Manager, ctx context.Context, output chan<- input.Messag
 		events:         make([]syscall.EpollEvent, 32),
 		readBuffer:     make([]byte, kernelEventSize*eventBufferSize),
 		udevBuffer:     make([]byte, udevBufferSize),
-	}, nil
+	}
+	if err := state.initWake(); err != nil {
+		state.close()
+		return nil, err
+	}
+	if err := addEpollFD(epfd, m.virtual.fd); err != nil {
+		state.close()
+		return nil, fmt.Errorf("epoll add virtual keyboard: %w", err)
+	}
+	return state, nil
+}
+
+// initWake registers a cancellation pipe and arranges for context cancellation
+// to wake the manager's otherwise indefinite epoll wait.
+func (s *managerState) initWake() error {
+	var pipe [2]int
+	if err := syscall.Pipe2(pipe[:], syscall.O_NONBLOCK|syscall.O_CLOEXEC); err != nil {
+		return fmt.Errorf("create manager wake pipe: %w", err)
+	}
+	if err := addEpollFD(s.epfd, pipe[0]); err != nil {
+		_ = syscall.Close(pipe[1])
+		_ = syscall.Close(pipe[0])
+		return fmt.Errorf("epoll add manager wake pipe: %w", err)
+	}
+	s.wakeRead = pipe[0]
+	s.wakeWrite = pipe[1]
+	done := make(chan struct{})
+	s.wakeDone = done
+	s.stopWake = context.AfterFunc(s.ctx, func() {
+		defer close(done)
+		for {
+			_, err := syscall.Write(pipe[1], []byte{1})
+			if err == syscall.EINTR {
+				continue
+			}
+			return
+		}
+	})
+	return nil
 }
 
 // close releases every keyboard, the udev monitor, and the epoll instance owned by this run.
 func (s *managerState) close() {
+	if s.stopWake != nil {
+		stopWake := s.stopWake
+		s.stopWake = nil
+		if !stopWake() && s.wakeDone != nil {
+			<-s.wakeDone
+		}
+	}
 	for _, device := range s.byPath {
 		s.removeActive(device)
 	}
 	for _, device := range s.candidates {
 		s.removeCandidate(device)
 	}
-	_ = syscall.Close(s.monitorFD)
-	_ = syscall.Close(s.epfd)
+	if s.wakeWrite >= 0 {
+		_ = syscall.Close(s.wakeWrite)
+		s.wakeWrite = -1
+	}
+	if s.wakeRead >= 0 {
+		_ = syscall.Close(s.wakeRead)
+		s.wakeRead = -1
+	}
+	if s.monitorFD >= 0 {
+		_ = syscall.Close(s.monitorFD)
+		s.monitorFD = -1
+	}
+	if s.epfd >= 0 {
+		_ = syscall.Close(s.epfd)
+		s.epfd = -1
+	}
 }
 
 // removeActive unregisters, ungrabs, closes, and forgets an active keyboard.
@@ -402,7 +448,7 @@ func (s *managerState) enumerate() error {
 }
 
 // loop runs device maintenance and dispatches epoll events until cancellation or failure.
-// Context cancellation returns nil; other fatal failures are returned.
+// It returns nil or the context error on cancellation, and other fatal failures unchanged.
 func (s *managerState) loop() error {
 	for {
 		select {
@@ -410,17 +456,15 @@ func (s *managerState) loop() error {
 			return nil
 		default:
 		}
-		s.applyPendingLEDs()
 		now := time.Now()
 		if err := s.checkCandidates(now); err != nil {
 			return err
 		}
-		pendingRetry, err := s.processRetries(now)
-		if err != nil {
+		if err := s.processRetries(now); err != nil {
 			return err
 		}
 
-		count, err := syscall.EpollWait(s.epfd, s.events, s.epollTimeout(pendingRetry))
+		count, err := syscall.EpollWait(s.epfd, s.events, s.epollTimeout(time.Now()))
 		if err != nil {
 			if err == syscall.EINTR {
 				continue
@@ -433,16 +477,6 @@ func (s *managerState) loop() error {
 			}
 		}
 	}
-}
-
-// applyPendingLEDs consumes compositor updates and syncs changed lock state to active keyboards.
-func (s *managerState) applyPendingLEDs() {
-	if !s.manager.consumePendingLEDs() {
-		return
-	}
-	caps, num, scroll := s.manager.locks.Snapshot()
-	s.manager.logger.Printf("compositor lock state caps=%t num=%t scroll=%t", caps, num, scroll)
-	s.syncLEDs()
 }
 
 // checkCandidates activates candidates that have become idle and reschedules failed acquisitions.
@@ -474,15 +508,12 @@ func (s *managerState) checkCandidates(now time.Time) error {
 	return nil
 }
 
-// processRetries runs due acquisition retries.
-// It reports whether any retry remains scheduled and returns a fatal processing error.
-func (s *managerState) processRetries(now time.Time) (bool, error) {
-	pending := false
+// processRetries runs due acquisition retries and returns a fatal processing error.
+func (s *managerState) processRetries(now time.Time) error {
 	for path, state := range s.retries {
 		if !state.scheduled {
 			continue
 		}
-		pending = true
 		if now.Before(state.deadline) {
 			continue
 		}
@@ -490,27 +521,106 @@ func (s *managerState) processRetries(now time.Time) (bool, error) {
 			continue
 		}
 		if err := s.consider(path, state.generation); err != nil {
-			return pending, err
+			return err
 		}
 	}
-	return pending, nil
+	return nil
 }
 
-// epollTimeout returns a short timeout while work is pending, or the idle timeout otherwise.
-func (s *managerState) epollTimeout(pendingRetry bool) int {
-	if len(s.candidates) != 0 || pendingRetry {
-		return int(candidateCheckInterval / time.Millisecond)
+// epollTimeout returns milliseconds until the earliest pending maintenance deadline.
+// It returns -1 when the manager can wait indefinitely and 0 when work is due.
+func (s *managerState) epollTimeout(now time.Time) int {
+	var deadline time.Time
+	if len(s.candidates) != 0 {
+		deadline = s.nextCandidateCheck
 	}
-	return 250
+	for _, state := range s.retries {
+		if !state.scheduled || (!deadline.IsZero() && !state.deadline.Before(deadline)) {
+			continue
+		}
+		deadline = state.deadline
+	}
+	if deadline.IsZero() {
+		return -1
+	}
+	delay := deadline.Sub(now)
+	if delay <= 0 {
+		return 0
+	}
+	return int((delay + time.Millisecond - 1) / time.Millisecond)
 }
 
 // handleReady dispatches one epoll event to the udev or keyboard handler.
 // It returns an error when the run must stop.
 func (s *managerState) handleReady(ready syscall.EpollEvent) error {
-	if int(ready.Fd) == s.monitorFD {
+	fd := int(ready.Fd)
+	if fd == s.monitorFD {
 		return s.handleUdevReady(ready)
 	}
+	if fd == s.wakeRead {
+		return s.handleWakeReady()
+	}
+	if fd == s.manager.virtual.fd {
+		return s.handleFeedbackReady(ready)
+	}
 	return s.handleDeviceReady(ready)
+}
+
+// handleWakeReady terminates the loop when the cancellation pipe is readable.
+func (s *managerState) handleWakeReady() error {
+	if err := s.ctx.Err(); err != nil {
+		return err
+	}
+	return errors.New("manager wake pipe became readable unexpectedly")
+}
+
+// handleFeedbackReady drains compositor output from the virtual keyboard and
+// synchronizes changed lock state to active physical keyboards.
+func (s *managerState) handleFeedbackReady(ready syscall.EpollEvent) error {
+	if ready.Events&(syscall.EPOLLERR|syscall.EPOLLHUP) != 0 {
+		return errors.New("virtual keyboard feedback closed")
+	}
+	var values [3]bool
+	var seen [3]bool
+	for {
+		count, err := syscall.Read(s.manager.virtual.fd, s.readBuffer)
+		if err != nil {
+			if err == syscall.EINTR {
+				continue
+			}
+			if err == syscall.EAGAIN || err == syscall.EWOULDBLOCK {
+				break
+			}
+			return fmt.Errorf("read virtual keyboard feedback: %w", err)
+		}
+		if count == 0 {
+			return errors.New("virtual keyboard feedback closed")
+		}
+		events, err := decodeEvents(s.readBuffer[:count])
+		if err != nil {
+			return fmt.Errorf("decode virtual keyboard feedback: %w", err)
+		}
+		for _, event := range events {
+			if event.Type != input.EVLed || event.Code > input.LEDScrollLock {
+				continue
+			}
+			values[event.Code] = event.Value != 0
+			seen[event.Code] = true
+		}
+	}
+	changed := false
+	for code, value := range values {
+		if seen[code] {
+			changed = s.manager.locks.SetLED(uint16(code), value) || changed
+		}
+	}
+	if !changed {
+		return nil
+	}
+	caps, num, scroll := s.manager.locks.Snapshot()
+	s.manager.logger.Printf("compositor lock state caps=%t num=%t scroll=%t", caps, num, scroll)
+	s.syncLEDs()
+	return nil
 }
 
 // handleUdevReady drains and applies sequenced device-management events.
@@ -563,23 +673,6 @@ func (s *managerState) handleDeviceReady(ready syscall.EpollEvent) error {
 		s.scheduleRetry(device.path, device.generation)
 	}
 	return nil
-}
-
-// consumePendingLEDs applies queued updates and reports whether the effective lock state changed.
-func (m *Manager) consumePendingLEDs() bool {
-	m.ledMu.Lock()
-	pending := m.ledPending
-	dirty := m.ledDirty
-	m.ledDirty = [3]bool{}
-	m.ledMu.Unlock()
-
-	changed := false
-	for code := uint16(0); code <= input.LEDScrollLock; code++ {
-		if dirty[code] {
-			changed = m.locks.SetLED(code, pending[code]) || changed
-		}
-	}
-	return changed
 }
 
 // Opens and probes a known device generation. A nil device with no error means
@@ -693,7 +786,7 @@ func (m *Manager) probeCandidate(path string, generation deviceGeneration, fd in
 	if err != nil {
 		return nil, fmt.Errorf("EVIOCGNAME: %w", err)
 	}
-	if name == m.virtualName {
+	if name == m.virtual.name {
 		return nil, nil
 	}
 	capabilities, err := keyCapabilities(fd)

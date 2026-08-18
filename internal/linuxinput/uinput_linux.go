@@ -3,7 +3,6 @@
 package linuxinput
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -91,65 +90,11 @@ func CreateVirtualKeyboard(name string) (*VirtualKeyboard, error) {
 	return keyboard, nil
 }
 
-func (v *VirtualKeyboard) Name() string { return v.name }
-
 func (v *VirtualKeyboard) Write(event input.Event) error {
 	if err := writeEventFD(v.fd, event); err != nil {
 		return fmt.Errorf("write uinput event: %w", err)
 	}
 	return nil
-}
-
-// DrainFeedback consumes output events written by the compositor to the
-// virtual keyboard. EV_LED events are the sole authority for lock state;
-// draining also keeps the feedback queue bounded.
-func (v *VirtualKeyboard) DrainFeedback(ctx context.Context, onLEDs func([]LEDUpdate)) error {
-	buffer := make([]byte, kernelEventSize*16)
-	ticker := time.NewTicker(25 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-		}
-		for {
-			count, err := syscall.Read(v.fd, buffer)
-			if err != nil {
-				if err == syscall.EINTR {
-					continue
-				}
-				if err == syscall.EAGAIN || err == syscall.EWOULDBLOCK {
-					break
-				}
-				return fmt.Errorf("read uinput feedback: %w", err)
-			}
-			if count == 0 {
-				break
-			}
-			events, err := decodeEvents(buffer[:count])
-			if err != nil {
-				return fmt.Errorf("decode uinput feedback: %w", err)
-			}
-			updates := feedbackLEDUpdates(events)
-			if len(updates) != 0 && onLEDs != nil {
-				onLEDs(updates)
-			}
-		}
-	}
-}
-
-// uinput sends output events such as EV_LED back to its userspace device
-// callback, but it does not frame those callbacks with SYN_REPORT. A read is
-// therefore just a convenient batching boundary, not a protocol boundary.
-func feedbackLEDUpdates(events []input.Event) []LEDUpdate {
-	updates := make([]LEDUpdate, 0, len(events))
-	for _, event := range events {
-		if event.Type == input.EVLed && event.Code <= input.LEDScrollLock {
-			updates = append(updates, LEDUpdate{Code: event.Code, Enabled: event.Value != 0})
-		}
-	}
-	return updates
 }
 
 func (v *VirtualKeyboard) Close() error {

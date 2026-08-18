@@ -101,12 +101,14 @@ because ioctl layouts must be audited per architecture.
 ### `epoll_create1(2)`, `epoll_ctl(2)`, and `epoll_wait(2)`
 
 The device manager creates one close-on-exec epoll instance. The udev netlink
-descriptor and every grabbed keyboard are registered for `EPOLLIN`,
-`EPOLLERR`, and `EPOLLHUP`. `epoll_wait` wakes immediately for hotplug or input
-and periodically for cancellation. While a held-key candidate or failed
-acquisition is pending, the timeout is shortened to 20 ms. Hangup, removal, or
-device errors release a keyboard and cause its held virtual keys to be
-released.
+descriptor, the virtual keyboard feedback descriptor, every grabbed keyboard,
+and a manager-owned cancellation pipe are registered for `EPOLLIN`, `EPOLLERR`,
+and `EPOLLHUP`. `epoll_wait` wakes immediately for hotplug, compositor LED
+feedback, physical input, or cancellation. With no candidate or retry work
+pending, it waits indefinitely. While a held-key candidate or failed
+acquisition is pending, the timeout is derived from the earliest actual
+maintenance deadline. Hangup, removal, or device errors release a keyboard and
+cause its held virtual keys to be released.
 
 ### udev netlink discovery
 
@@ -164,10 +166,11 @@ The virtual keyboard is configured with:
 Ordinary frames are injected by writing `struct input_event` records followed
 by `EV_SYN/SYN_REPORT`. `UI_DEV_DESTROY` removes the virtual keyboard during
 clean shutdown. Closing the uinput descriptor also destroys it after a crash.
-Device-output events are drained from the same read/write uinput descriptor.
-`EV_LED` output events are the sole source of lock state. uinput does not frame
-device-output callbacks with `SYN_REPORT`, so the feedback reader passes all
-LED changes returned by each `read(2)` call to the manager as one batch.
+Device-output events are drained from the same read/write uinput descriptor by
+the device manager's epoll loop. `EV_LED` output events are the sole source of
+lock state. uinput does not frame device-output callbacks with `SYN_REPORT`, so
+the feedback handler accepts every LED change returned by `read(2)` and applies
+it without waiting for a synchronization event.
 
 ### Unix socket and `SO_PEERCRED`
 
@@ -248,10 +251,10 @@ Xorg server; the Linux virtual console can fulfill the same role outside a
 graphical session. Thus a Caps Lock key remapped to Control does not
 accidentally toggle the Caps LED.
 
-The feedback reader collects all changes returned by each `read(2)` call. The
-manager coalesces them under a mutex, adopts them as the global state, then
-writes supported `EV_LED` values to every physical keyboard followed by one
-`SYN_REPORT`. A newly connected keyboard is initialized only for states the
+The manager collects changes while draining the nonblocking virtual descriptor,
+adopts supported events as the global state on its single epoll-owner thread,
+then writes supported `EV_LED` values to every physical keyboard followed by
+one `SYN_REPORT`. A newly connected keyboard is initialized only for states the
 active consumer has provided; unknown LEDs are left untouched.
 
 Lock keys are valid in prefixes and continuations. Consuming one deliberately
@@ -269,6 +272,12 @@ to continue with a partially functioning virtual output path.
 Every manager-to-main-loop channel send also selects on context cancellation.
 If the bounded message queue is full during shutdown, cancellation abandons
 the pending send so the manager can run its descriptor cleanup and terminate.
+
+The manager's cancellation pipe wakes its indefinite epoll wait immediately.
+Its callback is stopped or joined before the pipe descriptors are closed, so a
+late cancellation write cannot target a recycled descriptor. The virtual
+keyboard remains owned by the main run function and is closed only after the
+manager has released all physical grabs.
 
 The action socket is not on the input critical path: publication uses bounded
 queues and disconnects slow consumers.
