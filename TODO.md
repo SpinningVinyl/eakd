@@ -1,8 +1,8 @@
-# Code quality TODO
+# Pre-release TODO
 
 ## 1. Enforce sequence deadlines inside the engine — Resolved
 
-`Engine.HandleFrame` now expires stale matching state before processing a newly arrived frame. Timer events remain in the main loop for prompt resolution when no input arrives, but correctness no longer depends on whether the loop selects a ready timer or input channel first. Regression tests cover expiration during prefix candidacy, while awaiting a continuation, and during continuation candidacy.
+`Engine.HandleFrame` now expires stale matching state before processing a newly arrived frame. Timer events remain in the main loop for prompt resolution when no input arrives, but correctness no longer depends on whether the loop selects a ready timer or input channel first.
 
 ## 2. Harden the Unix socket lifecycle — Resolved
 
@@ -33,3 +33,7 @@ Virtual keyboard feedback is now handled by the manager's epoll loop instead of 
 ## 9. Canonicalize chords in proportion to their size — Resolved
 
 `chordSignature` now clones and sorts the keys actually present, then serializes the sorted values. 
+
+## 10. Make the README.md more readable
+
+The README is currently poorly organised and difficult to read. Also it needs a better section on configuration (e.g. the example config for `eakc` doesn't demonstrate `working_directory`).
