@@ -12,6 +12,7 @@ import (
 	"os"
 	"sync"
 	"syscall"
+	"time"
 )
 
 type client struct {
@@ -204,6 +205,14 @@ func removeSocket(path string) error {
 	}
 	if info.Mode()&os.ModeSocket == 0 {
 		return fmt.Errorf("refusing to remove non-socket entry at %s", path)
+	}
+	connection, err := net.DialTimeout("unix", path, time.Second)
+	if err == nil {
+		_ = connection.Close()
+		return fmt.Errorf("active socket at %s: another instance already running?", path)
+	}
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		return fmt.Errorf("probe socket path %s: %w", path, err)
 	}
 	if err := os.Remove(path); err != nil {
 		return fmt.Errorf("error removing stale socket: %w", err)
