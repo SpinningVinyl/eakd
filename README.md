@@ -1,5 +1,26 @@
 # EAKD/EAKC
 
+## TL;DR
+
+EAKD/EAKC is a solution that allows you to launch programs or
+execute shell scripts via Emacs-style key sequences. For example, it is
+possible to configure sequences such as `Logo+T, 1`, which means "press
+`T` while holding `Logo`, then release `Logo` and press and release `1`".
+It also supports two-chord Emacs-style sequences with a continuously held
+modifier such as `Logo+T, Logo+1`, which means "press and release `T`
+and then `1` while holding `Logo`, then release `Logo`".
+
+Please take note that *only* Emacs-style prefixed sequences are in scope for
+this project, since one-shot hotkey combinations are well supported by pretty
+much every desktop environment and Wayland compositor under the Sun.
+
+The server, called EAKD, is an input broker that runs with elevated privileges;
+the client, called EAKC, is the user-side client that launches programs and
+executes shell scripts. Great care has been taken in making sure that the
+EAKD/EAKC combo is reasonably secure. Please see SECURITY.md for details.
+
+## Longer version
+
 EAKD/EAKC is an environment-agnostic solution for managing hotkeys in Linux.
 `eakd` serves as the privileged input broker; `eakc` is the user-side client.
 Both need to be installed and running for mapped actions to execute.
