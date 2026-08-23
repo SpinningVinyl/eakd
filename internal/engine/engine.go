@@ -48,6 +48,7 @@ type Engine struct {
 	physical     map[string]map[uint16]bool
 	logicalCount map[keycode.Logical]int
 	startKeys    map[keycode.Logical]bool
+	bindingCarry map[keycode.Logical]bool
 }
 
 func New(cfg config.Config) *Engine {
@@ -88,6 +89,8 @@ func (e *Engine) handleFrame(frame input.Frame, now time.Time) Result {
 		return Result{Forward: []input.Frame{frame}}
 	}
 
+	consumed := false
+
 	buffered := e.mode == modePrefixCandidate || e.mode == modeBindingCandidate
 	if e.mode == modeIdle {
 		for _, tr := range transitions {
@@ -104,6 +107,21 @@ func (e *Engine) handleFrame(frame input.Frame, now time.Time) Result {
 				e.startBindingCandidate(tr.key)
 				buffered = true
 				break
+			}
+		}
+
+		// Only carry releases if no binding candidate was started.
+		if e.mode == modeAwaitBinding {
+			consumed = true
+			for _, tr := range transitions {
+				carriedRelease := tr.value == 0 && e.bindingCarry[tr.key]
+				if !carriedRelease {
+					consumed = false
+					continue
+				}
+				if tr.countAfter == 0 {
+					delete(e.bindingCarry, tr.key)
+				}
 			}
 		}
 	}
@@ -131,12 +149,15 @@ func (e *Engine) handleFrame(frame input.Frame, now time.Time) Result {
 	if len(result.Forward) == 0 {
 		switch e.mode {
 		case modePrefixCandidate:
-			if e.seq.matched >= 0 && chordReleased(e.cfg.Prefixes[e.seq.matched].Keys, e.seq.held) {
-				e.activePrefix = e.seq.matched
-				e.mode = modeAwaitBinding
-				e.seq = sequence{}
-				e.buffer = nil // consume the complete prefix
-				e.deadline = now.Add(e.cfg.SequenceTimeout)
+			if e.seq.matched >= 0 {
+				if heldModifiers, ready := prefixReadyForBinding(e.cfg.Prefixes[e.seq.matched].Keys, e.seq.held); ready {
+					e.activePrefix = e.seq.matched
+					e.mode = modeAwaitBinding
+					e.bindingCarry = heldModifiers
+					e.seq = sequence{}
+					e.buffer = nil // consume the complete prefix
+					e.deadline = now.Add(e.cfg.SequenceTimeout)
+				}
 			}
 		case modeBindingCandidate:
 			bindings := e.cfg.Prefixes[e.activePrefix].Bindings
@@ -147,7 +168,7 @@ func (e *Engine) handleFrame(frame input.Frame, now time.Time) Result {
 		}
 	}
 
-	if !buffered && len(result.Forward) == 0 && len(result.Actions) == 0 {
+	if !buffered && !consumed && len(result.Forward) == 0 && len(result.Actions) == 0 {
 		result.Forward = append(result.Forward, frame)
 	}
 	return result
@@ -269,14 +290,29 @@ func (e *Engine) advancePrefix(tr transition, result *Result) {
 }
 
 func (e *Engine) startBindingCandidate(first keycode.Logical) {
-	possible := make([]int, 0, len(e.cfg.Prefixes[e.activePrefix].Bindings))
+	bindings := e.cfg.Prefixes[e.activePrefix].Bindings
+	possible := make([]int, 0, len(bindings))
 	for i, binding := range e.cfg.Prefixes[e.activePrefix].Bindings {
-		if slices.Contains(binding.Keys, first) {
+		if !slices.Contains(binding.Keys, first) {
+			continue
+		}
+		includesCarry := true
+		for key := range e.bindingCarry {
+			if !slices.Contains(binding.Keys, key) {
+				includesCarry = false
+				break
+			}
+		}
+		if includesCarry {
 			possible = append(possible, i)
 		}
 	}
 	e.mode = modeBindingCandidate
 	e.seq = newSequence(possible)
+	for key := range e.bindingCarry {
+		e.seq.seen[key] = true
+		e.seq.held[key] = true
+	}
 }
 
 func (e *Engine) advanceBinding(tr transition, result *Result) {
@@ -345,6 +381,7 @@ func (e *Engine) toIdle() {
 	e.seq = sequence{}
 	e.buffer = nil
 	e.deadline = time.Time{}
+	e.bindingCarry = nil
 }
 
 func chordHeldAndSeen(keys []keycode.Logical, seen, held map[keycode.Logical]bool) bool {
@@ -363,4 +400,16 @@ func chordReleased(keys []keycode.Logical, held map[keycode.Logical]bool) bool {
 		}
 	}
 	return true
+}
+
+func prefixReadyForBinding(prefixKeys []keycode.Logical, held map[keycode.Logical]bool) (carry map[keycode.Logical]bool, ready bool) {
+	result := make(map[keycode.Logical]bool)
+	for _, key := range prefixKeys {
+		if held[key] && keycode.IsLogicalModifier(key) {
+			result[key] = true
+		} else if held[key] && !keycode.IsLogicalModifier(key) {
+			return nil, false
+		}
+	}
+	return result, true
 }
