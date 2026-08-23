@@ -65,6 +65,37 @@ func TestRecognizedSequenceIsConsumedAndEmitsAction(t *testing.T) {
 	}
 }
 
+func TestHeldPrefixModifierCarriesIntoBinding(t *testing.T) {
+	cfg := testConfig()
+	cfg.Prefixes[0].Bindings[0].Keys = []keycode.Logical{
+		keycode.LogicalLogo,
+		keycode.Logical(keycode.Key1),
+	}
+	e := New(cfg)
+	now := time.Unix(1, 0)
+	sequence := []input.Frame{
+		keyFrame("kbd0", keycode.KeyLeftMeta, 1),
+		keyFrame("kbd0", keycode.KeyT, 1),
+		keyFrame("kbd0", keycode.KeyT, 0),
+		keyFrame("kbd0", keycode.Key1, 1),
+		keyFrame("kbd0", keycode.Key1, 0),
+		keyFrame("kbd0", keycode.KeyLeftMeta, 0),
+	}
+
+	for i, frame := range sequence {
+		result := e.HandleFrame(frame, now.Add(time.Duration(i)*time.Millisecond))
+		if len(result.Forward) != 0 {
+			t.Fatalf("recognized sequence leaked frames at step %d: %#v", i, result.Forward)
+		}
+		if i < len(sequence)-1 && len(result.Actions) != 0 {
+			t.Fatalf("action emitted before final modifier release at step %d: %#v", i, result.Actions)
+		}
+		if i == len(sequence)-1 && (len(result.Actions) != 1 || result.Actions[0] != "terminal.one") {
+			t.Fatalf("unexpected actions after final modifier release: %#v", result.Actions)
+		}
+	}
+}
+
 func TestFailedPrefixCandidateIsReplayed(t *testing.T) {
 	e := New(testConfig())
 	now := time.Unix(1, 0)
