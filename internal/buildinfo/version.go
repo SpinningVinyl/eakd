@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 package buildinfo
 
 // Version is replaced at link time by the Makefile. Builds that do not inject
