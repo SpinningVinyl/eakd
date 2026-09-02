@@ -170,8 +170,19 @@ func TestExecuteCommandPassesArgumentsAndWorkingDirectory(t *testing.T) {
 		WorkingDirectory: workingDirectory,
 	}
 
-	if err := executeCommand(context.Background(), action); err != nil {
-		t.Fatalf("execute helper command: %v", err)
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devNull.Close()
+	commandErr := func() error {
+		originalStdout := os.Stdout
+		os.Stdout = devNull
+		defer func() { os.Stdout = originalStdout }()
+		return executeCommand(context.Background(), action)
+	}()
+	if commandErr != nil {
+		t.Fatalf("execute helper command: %v", commandErr)
 	}
 	contents, err := os.ReadFile(outputPath)
 	if err != nil {
