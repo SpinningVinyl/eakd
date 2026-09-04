@@ -8,6 +8,12 @@ import (
 )
 
 func TestValidateIDLength(t *testing.T) {
+	if err := ValidateID("terminal.one"); err != nil {
+		t.Fatalf("ValidateID rejected a normal ID: %v", err)
+	}
+	if err := ValidateID(""); err == nil {
+		t.Fatal("ValidateID accepted an empty string")
+	}
 	if err := ValidateID(strings.Repeat("a", MaxActionIDBytes)); err != nil {
 		t.Fatalf("ValidateID rejected an ID at the limit: %v", err)
 	}
