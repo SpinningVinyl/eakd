@@ -111,7 +111,25 @@ Users are encouraged to inspect the source code and the Makefile, then build
 
 On the first installation, `make install` creates `/etc/eak/eakd.json` from the
 example configuration. Replace `allowed_uids` with the UID that will run
-`eakc`, adjust the bindings, validate the file, and enable the broker:
+`eakc` and adjust the bindings. This minimal configuration maps
+`Logo+T, 1` and the continuously held-modifier sequence `Logo+T, Logo+2`:
+
+```json
+{
+  "allowed_uids": [1000],
+  "prefixes": [
+    {
+      "keys": ["LOGO", "T"],
+      "bindings": [
+        {"keys": ["1"], "action": "terminal"},
+        {"keys": ["LOGO", "2"], "action": "project"}
+      ]
+    }
+  ]
+}
+```
+
+Validate the file and enable the broker:
 
 ```sh
 sudo /usr/libexec/eakd --config /etc/eak/eakd.json --check
@@ -136,7 +154,26 @@ development.
 
 The executable, user unit, and example configuration are installed by
 `sudo make install`. Each participating desktop user should copy and validate
-their own configuration:
+their own configuration. This minimal configuration defines the two actions
+used by the broker example above:
+
+```json
+{
+  "actions": {
+    "terminal": {
+      "type": "exec",
+      "command": ["konsole"]
+    },
+    "project": {
+      "type": "shell",
+      "script": "exec emacs .",
+      "working_directory": "/home/alice/projects/example"
+    }
+  }
+}
+```
+
+Copy the installed example and validate the resulting file:
 
 ```sh
 install -D -m 0600 /usr/share/doc/eak/eakc.example.json "$HOME/.config/eak/eakc.json"
@@ -195,10 +232,14 @@ Client actions have one of two types:
 - `shell` passes `script` to `/bin/sh -c`. Use this only when pipelines,
   expansion, redirection, or other shell syntax is required.
 
-Both types accept an optional absolute `working_directory`. Command output is
-sent to eakc's stdout and stderr, which normally means the user journal. At
-most `max_parallel` commands run simultaneously; further received actions wait
-in the bounded `queue_size` channel. Unknown action IDs are logged and ignored.
+Both types accept an optional absolute `working_directory`. It becomes the
+current directory of the command or shell script, for example
+`"working_directory": "/home/alice/projects/example"`. The directory must
+already exist and be accessible to the user running `eakc`; paths beginning
+with `~` and environment variables are not expanded. Command output is sent to
+eakc's stdout and stderr, which normally means the user journal. At most
+`max_parallel` commands run simultaneously; further received actions wait in
+the bounded `queue_size` channel. Unknown action IDs are logged and ignored.
 
 `eakc` executes code with the user's privileges. The config file must be owned 
 by the user running `eakc`, must not be a symlink, and must not be group-
