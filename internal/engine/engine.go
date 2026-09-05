@@ -84,14 +84,7 @@ func (e *Engine) HandleFrame(frame input.Frame, now time.Time) Result {
 }
 
 func (e *Engine) handleFrame(frame input.Frame, now time.Time) Result {
-	original := frame
-	if held := e.suppressed[frame.Device]; len(held) != 0 {
-		frame = frame.Clone()
-		frame.Events = slices.DeleteFunc(frame.Events, func(event input.Event) bool {
-			return event.Type == input.EVMsc || (event.Type == input.EVKey && held[event.Code])
-		})
-	}
-	transitions := e.applyFrame(original, now)
+	frame, transitions := e.applyFrame(frame, now)
 	if len(transitions) == 0 && (len(frame.Events) == 0 || (len(frame.Events) == 1 && frame.Events[0].Type == input.EVSyn)) {
 		return Result{}
 	}
@@ -274,14 +267,26 @@ func (e *Engine) ForwardPressed(device string, pressed map[uint16]bool) map[uint
 	return result
 }
 
-func (e *Engine) applyFrame(frame input.Frame, now time.Time) []transition {
+func (e *Engine) applyFrame(frame input.Frame, now time.Time) (input.Frame, []transition) {
 	deviceState := e.physical[frame.Device]
 	if deviceState == nil {
 		deviceState = make(map[uint16]bool)
 		e.physical[frame.Device] = deviceState
 	}
+	filter := len(e.suppressed[frame.Device]) != 0
+	visible := frame
+	if filter {
+		visible.Events = make([]input.Event, 0, len(frame.Events))
+	}
 	var transitions []transition
 	for _, event := range frame.Events {
+		// Decide visibility before a release clears suppression, independently
+		// of whether the event produces a matching transition. Keep the existing
+		// policy of dropping scan codes throughout a frame that starts suppressed.
+		if filter && event.Type != input.EVMsc &&
+			(event.Type != input.EVKey || !e.suppressed[frame.Device][event.Code]) {
+			visible.Events = append(visible.Events, event)
+		}
 		if event.Type != input.EVKey {
 			continue
 		}
@@ -327,7 +332,7 @@ func (e *Engine) applyFrame(frame input.Frame, now time.Time) []transition {
 			key: logical, value: event.Value, countAfter: e.logicalCount[logical],
 		})
 	}
-	return transitions
+	return visible, transitions
 }
 
 // A consumed modifier can initiate further remap taps until it is released.

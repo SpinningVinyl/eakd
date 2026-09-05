@@ -6,9 +6,83 @@ import (
 	"eak/internal/config"
 	"eak/internal/input"
 	"eak/internal/keycode"
+	"slices"
 	"testing"
 	"time"
 )
+
+func TestSuppressedModifierRepressFollowup(t *testing.T) {
+	for _, outcome := range []string{"timeout", "failure", "remap"} {
+		t.Run(outcome, func(t *testing.T) {
+			e := remapEngine()
+			now := time.Unix(1, 0)
+			e.HandleFrame(keyFrame("kbd", keycode.KeyLeftMeta, 1), now)
+			e.HandleFrame(keyFrame("kbd", keycode.KeyHome, 1), now)
+			e.HandleFrame(keyFrame("kbd", keycode.KeyHome, 0), now)
+			frame := input.Frame{Device: "kbd", Events: []input.Event{
+				{Type: input.EVMsc, Code: input.MscScan, Value: 125},
+				{Type: input.EVKey, Code: keycode.KeyLeftMeta, Value: 0},
+				{Type: input.EVMsc, Code: input.MscScan, Value: 125},
+				{Type: input.EVKey, Code: keycode.KeyLeftMeta, Value: 1},
+				{Type: input.EVSyn, Code: input.SynReport},
+			}}
+			original := frame.Clone()
+			r := e.HandleFrame(frame, now)
+			if len(r.Forward) != 0 || len(r.Actions) != 0 || !slices.Equal(frame.Events, original.Events) {
+				t.Fatalf("repress emitted output or mutated input: %+v", r)
+			}
+			var want []input.Frame
+			switch outcome {
+			case "timeout":
+				r = e.HandleTimeout(now.Add(time.Second))
+				want = []input.Frame{keyFrame("kbd", keycode.KeyLeftMeta, 1)}
+			case "failure":
+				r = e.HandleFrame(keyFrame("kbd", keycode.KeyA, 1), now)
+				want = []input.Frame{keyFrame("kbd", keycode.KeyLeftMeta, 1), keyFrame("kbd", keycode.KeyA, 1)}
+			case "remap":
+				if r = e.HandleFrame(keyFrame("kbd", keycode.KeyHome, 1), now); len(r.Forward) != 0 {
+					t.Fatalf("Home press leaked: %+v", r)
+				}
+				r = e.HandleFrame(keyFrame("kbd", keycode.KeyHome, 0), now)
+				want = []input.Frame{keyFrame("eakd-remap", keycode.KeyInsert, 1), keyFrame("eakd-remap", keycode.KeyInsert, 0)}
+			}
+			if len(r.Actions) != 0 || len(r.Forward) != len(want) {
+				t.Fatalf("unexpected output: %+v", r)
+			}
+			for i := range want {
+				if r.Forward[i].Device != want[i].Device || !slices.Equal(r.Forward[i].Events, want[i].Events) {
+					t.Fatalf("frame %d: got %+v, want %+v", i, r.Forward[i], want[i])
+				}
+			}
+			r = e.HandleFrame(keyFrame("kbd", keycode.KeyLeftMeta, 0), now.Add(time.Second))
+			if outcome == "remap" && len(r.Forward) != 0 {
+				t.Fatalf("consumed repress release leaked: %+v", r)
+			}
+			if outcome != "remap" && (len(r.Forward) != 1 || !slices.Equal(r.Forward[0].Events, keyFrame("kbd", keycode.KeyLeftMeta, 0).Events)) {
+				t.Fatalf("forwarded repress release missing: %+v", r)
+			}
+		})
+	}
+}
+
+func TestSuppressionPreservesNonMatchingEvents(t *testing.T) {
+	e := remapEngine()
+	now := time.Unix(1, 0)
+	e.HandleFrame(keyFrame("kbd", keycode.KeyLeftMeta, 1), now)
+	e.HandleFrame(keyFrame("kbd", keycode.KeyHome, 1), now)
+	e.HandleFrame(keyFrame("kbd", keycode.KeyHome, 0), now)
+	frame := input.Frame{Device: "kbd", Events: []input.Event{
+		{Type: input.EVKey, Code: keycode.KeyA, Value: 1},
+		{Type: input.EVKey, Code: keycode.KeyA, Value: 1}, // Duplicate press.
+		{Type: input.EVKey, Code: keycode.KeyA, Value: 2}, // Repeat.
+		{Type: input.EVKey, Code: keycode.KeyB, Value: 0}, // Unmatched release.
+		{Type: input.EVSyn, Code: input.SynReport},
+	}}
+	r := e.HandleFrame(frame, now)
+	if len(r.Actions) != 0 || len(r.Forward) != 1 || !slices.Equal(r.Forward[0].Events, frame.Events) {
+		t.Fatalf("non-matching events were filtered: %+v", r)
+	}
+}
 
 func remapEngine() *Engine {
 	cfg := testConfig()
@@ -141,6 +215,28 @@ func TestRepeatedRemapModifierReleasedInPressFrame(t *testing.T) {
 		if ev.Type != input.EVKey || ev.Code != keycode.KeyInsert || ev.Value != value {
 			t.Fatalf("unexpected tap event: %+v", ev)
 		}
+	}
+}
+
+func TestSuppressedModifierRepressInSameFrameReplaysOnTimeout(t *testing.T) {
+	e := remapEngine()
+	now := time.Unix(1, 0)
+	e.HandleFrame(keyFrame("kbd", keycode.KeyLeftMeta, 1), now)
+	e.HandleFrame(keyFrame("kbd", keycode.KeyHome, 1), now)
+	e.HandleFrame(keyFrame("kbd", keycode.KeyHome, 0), now)
+
+	r := e.HandleFrame(input.Frame{Device: "kbd", Events: []input.Event{
+		{Type: input.EVKey, Code: keycode.KeyLeftMeta, Value: 0},
+		{Type: input.EVKey, Code: keycode.KeyLeftMeta, Value: 1},
+		{Type: input.EVSyn, Code: input.SynReport},
+	}}, now)
+	if len(r.Forward) != 0 || len(r.Actions) != 0 {
+		t.Fatalf("new modifier candidate emitted premature output: %+v", r)
+	}
+	r = e.HandleTimeout(now.Add(time.Second))
+	want := input.Event{Type: input.EVKey, Code: keycode.KeyLeftMeta, Value: 1}
+	if len(r.Actions) != 0 || len(r.Forward) != 1 || len(r.Forward[0].Events) != 2 || r.Forward[0].Events[0] != want {
+		t.Fatalf("expected only the new modifier press to replay: %+v", r)
 	}
 }
 
