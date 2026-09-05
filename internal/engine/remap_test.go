@@ -143,3 +143,29 @@ func TestRepeatedRemapModifierReleasedInPressFrame(t *testing.T) {
 		}
 	}
 }
+
+func TestRepeatedRemapModifierReleasedBeforePressInFrame(t *testing.T) {
+	e := remapEngine()
+	now := time.Unix(1, 0)
+	e.HandleFrame(keyFrame("kbd", keycode.KeyLeftMeta, 1), now)
+	e.HandleFrame(keyFrame("kbd", keycode.KeyHome, 1), now)
+	e.HandleFrame(keyFrame("kbd", keycode.KeyHome, 0), now)
+
+	r := e.HandleFrame(input.Frame{Device: "kbd", Events: []input.Event{
+		{Type: input.EVKey, Code: keycode.KeyLeftMeta, Value: 0},
+		{Type: input.EVKey, Code: keycode.KeyHome, Value: 1},
+		{Type: input.EVSyn, Code: input.SynReport},
+	}}, now)
+	r.Forward = append(r.Forward, e.HandleFrame(keyFrame("kbd", keycode.KeyHome, 0), now).Forward...)
+	if len(r.Forward) != 2 || len(r.Actions) != 0 {
+		t.Fatalf("expected ordinary Home press and release: %+v", r)
+	}
+	for i, value := range []int32{1, 0} {
+		if events := r.Forward[i].Events; len(events) != 2 || events[0] != (input.Event{Type: input.EVKey, Code: keycode.KeyHome, Value: value}) {
+			t.Fatalf("unexpected forwarded events: %+v", events)
+		}
+	}
+	if _, pending := e.Deadline(); pending {
+		t.Fatal("modifier release left a candidate pending")
+	}
+}

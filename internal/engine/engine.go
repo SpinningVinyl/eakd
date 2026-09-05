@@ -91,7 +91,7 @@ func (e *Engine) handleFrame(frame input.Frame, now time.Time) Result {
 			return event.Type == input.EVMsc || (event.Type == input.EVKey && held[event.Code])
 		})
 	}
-	transitions := e.applyFrame(original)
+	transitions := e.applyFrame(original, now)
 	if len(transitions) == 0 && (len(frame.Events) == 0 || (len(frame.Events) == 1 && frame.Events[0].Type == input.EVSyn)) {
 		return Result{}
 	}
@@ -106,19 +106,6 @@ func (e *Engine) handleFrame(frame input.Frame, now time.Time) Result {
 	consumed := false
 
 	buffered := e.mode == modePrefixCandidate || e.mode == modeBindingCandidate
-	if e.mode == modeIdle {
-		for _, tr := range transitions {
-			if tr.value == 1 && e.startRepeatedRemap(tr.key, now) {
-				buffered = true
-				break
-			}
-			if tr.value == 1 && e.startKeys[tr.key] {
-				e.startPrefixCandidate(tr.key, now)
-				buffered = true
-				break
-			}
-		}
-	}
 	if e.mode == modeAwaitBinding {
 		for _, tr := range transitions {
 			if tr.value == 1 {
@@ -282,7 +269,7 @@ func (e *Engine) ForwardPressed(device string, pressed map[uint16]bool) map[uint
 	return result
 }
 
-func (e *Engine) applyFrame(frame input.Frame) []transition {
+func (e *Engine) applyFrame(frame input.Frame, now time.Time) []transition {
 	deviceState := e.physical[frame.Device]
 	if deviceState == nil {
 		deviceState = make(map[uint16]bool)
@@ -321,6 +308,14 @@ func (e *Engine) applyFrame(frame input.Frame) []transition {
 			}
 			if event.Value != 0 || e.mode != modePrefixCandidate || !e.seq.held[logical] {
 				continue
+			}
+		}
+		// Start candidates with the modifiers held at this event, before a
+		// later release in the same frame changes suppression. Matching and
+		// completion still validate the entire frame below in handleFrame.
+		if e.mode == modeIdle && event.Value == 1 {
+			if !e.startRepeatedRemap(logical, now) && e.startKeys[logical] {
+				e.startPrefixCandidate(logical, now)
 			}
 		}
 		transitions = append(transitions, transition{
