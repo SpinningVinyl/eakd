@@ -115,3 +115,31 @@ func TestRepeatedRemapModifierReleasedFirst(t *testing.T) {
 		t.Fatal("released modifier remains suppressed")
 	}
 }
+
+func TestRepeatedRemapModifierReleasedInPressFrame(t *testing.T) {
+	e := remapEngine()
+	now := time.Unix(1, 0)
+	e.HandleFrame(keyFrame("kbd", keycode.KeyLeftMeta, 1), now)
+	e.HandleFrame(keyFrame("kbd", keycode.KeyHome, 1), now)
+	e.HandleFrame(keyFrame("kbd", keycode.KeyHome, 0), now)
+
+	// Home is pressed before the consumed modifier is released in one frame.
+	r := e.HandleFrame(input.Frame{Device: "kbd", Events: []input.Event{
+		{Type: input.EVKey, Code: keycode.KeyHome, Value: 1},
+		{Type: input.EVKey, Code: keycode.KeyLeftMeta, Value: 0},
+		{Type: input.EVSyn, Code: input.SynReport},
+	}}, now)
+	if len(r.Forward) != 0 || len(r.Actions) != 0 {
+		t.Fatalf("source frame leaked: %+v", r)
+	}
+	r = e.HandleFrame(keyFrame("kbd", keycode.KeyHome, 0), now)
+	if len(r.Forward) != 2 || len(r.Actions) != 0 {
+		t.Fatalf("expected Insert tap: %+v", r)
+	}
+	for i, value := range []int32{1, 0} {
+		ev := r.Forward[i].Events[0]
+		if ev.Type != input.EVKey || ev.Code != keycode.KeyInsert || ev.Value != value {
+			t.Fatalf("unexpected tap event: %+v", ev)
+		}
+	}
+}
