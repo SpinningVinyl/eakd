@@ -183,13 +183,14 @@ func run(parent context.Context, cfg config.Config, logger *log.Logger) error {
 			}
 			if message.Resync != nil {
 				processor.Resync(message.Resync.Device, message.Resync.Pressed)
-				if err := forwarder.Resync(message.Resync.Device, message.Resync.Pressed); err != nil {
+				if err := forwarder.Resync(message.Resync.Device, processor.ForwardPressed(message.Resync.Device, message.Resync.Pressed)); err != nil {
 					return fmt.Errorf("resynchronize %s: %w", message.Resync.Device, err)
 				}
 				resetTimer()
 			}
 			if message.Removed != "" {
 				processor.Resync(message.Removed, nil)
+				processor.ForwardPressed(message.Removed, nil)
 				if err := forwarder.Resync(message.Removed, nil); err != nil {
 					return fmt.Errorf("release removed device %s: %w", message.Removed, err)
 				}

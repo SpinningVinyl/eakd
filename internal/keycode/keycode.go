@@ -9,9 +9,11 @@ import (
 )
 
 const (
-	KeyEsc = 1
-	Key1   = 2
-	Key0   = 11
+	KeyEsc    = 1
+	KeyHome   = 102
+	KeyInsert = 110
+	Key1      = 2
+	Key0      = 11
 
 	KeyA = 30
 	KeyB = 48
@@ -209,7 +211,7 @@ func Parse(name string) (Logical, error) {
 		}
 	}
 	lookupName := n
-	if strings.HasPrefix(n, "KP") {
+	if !strings.HasPrefix(n, "KEY_") {
 		lookupName = "KEY_" + n
 	}
 	if code, ok := fixedNames[lookupName]; ok {

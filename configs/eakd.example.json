@@ -3,6 +3,10 @@
   "sequence_timeout": "750ms",
   "socket_path": "/run/eak/eakd.sock",
   "allowed_uids": [1000],
+  "remaps": [
+    {"keys": ["LOGO", "HOME"], "tap": "INSERT"},
+    {"keys": ["LOGO", "END"], "tap": "DELETE"}
+  ],
   "prefixes": [
     {
       "keys": ["LOGO", "A"],

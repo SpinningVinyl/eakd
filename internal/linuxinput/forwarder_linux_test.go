@@ -8,13 +8,60 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"eak/internal/config"
+	"eak/internal/engine"
 	"eak/internal/input"
 	"eak/internal/keycode"
 )
 
 type recordingWriter struct {
 	events []input.Event
+}
+
+func TestRemapOutputThroughForwarder(t *testing.T) {
+	for _, targetHeld := range []bool{false, true} {
+		writer := &recordingWriter{}
+		forwarder := NewForwarder(writer)
+		processor := engine.New(config.Config{CandidateTimeout: time.Second, Prefixes: []config.Prefix{{
+			Keys: []keycode.Logical{keycode.LogicalLogo, keycode.Logical(keycode.KeyHome)}, Tap: keycode.KeyInsert,
+		}}})
+		if targetHeld {
+			if err := forwarder.Frame(keyFrame("other", keycode.KeyInsert, 1)); err != nil {
+				t.Fatal(err)
+			}
+			writer.events = nil
+		}
+		for _, event := range []struct {
+			code  uint16
+			value int32
+		}{
+			{keycode.KeyLeftMeta, 1}, {keycode.KeyHome, 1}, {keycode.KeyHome, 0},
+			{keycode.KeyHome, 1}, {keycode.KeyHome, 0}, {keycode.KeyLeftMeta, 0},
+		} {
+			result := processor.HandleFrame(keyFrame("kbd", event.code, event.value), time.Unix(1, 0))
+			for _, frame := range result.Forward {
+				if err := forwarder.Frame(frame); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if targetHeld {
+			if len(writer.events) != 0 || forwarder.counts[keycode.KeyInsert] != 1 {
+				t.Fatalf("tap disturbed held target: %v", writer.events)
+			}
+		} else {
+			if len(writer.events) != 8 {
+				t.Fatalf("expected two framed taps: %v", writer.events)
+			}
+			for i, value := range []int32{1, 0, 1, 0} {
+				if event := writer.events[2*i]; event.Type != input.EVKey || event.Code != keycode.KeyInsert || event.Value != value {
+					t.Fatalf("unexpected output: %v", writer.events)
+				}
+			}
+		}
+	}
 }
 
 func (w *recordingWriter) Write(event input.Event) error {

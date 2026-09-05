@@ -51,6 +51,7 @@ type Engine struct {
 	logicalCount map[keycode.Logical]int
 	startKeys    map[keycode.Logical]bool
 	bindingCarry map[keycode.Logical]bool
+	suppressed   map[string]map[uint16]bool
 }
 
 func New(cfg config.Config) *Engine {
@@ -60,6 +61,7 @@ func New(cfg config.Config) *Engine {
 		physical:     make(map[string]map[uint16]bool),
 		logicalCount: make(map[keycode.Logical]int),
 		startKeys:    make(map[keycode.Logical]bool),
+		suppressed:   make(map[string]map[uint16]bool),
 	}
 	for _, prefix := range cfg.Prefixes {
 		for _, key := range prefix.Keys {
@@ -82,7 +84,17 @@ func (e *Engine) HandleFrame(frame input.Frame, now time.Time) Result {
 }
 
 func (e *Engine) handleFrame(frame input.Frame, now time.Time) Result {
-	transitions := e.applyFrame(frame)
+	original := frame
+	if held := e.suppressed[frame.Device]; len(held) != 0 {
+		frame = frame.Clone()
+		frame.Events = slices.DeleteFunc(frame.Events, func(event input.Event) bool {
+			return event.Type == input.EVMsc || (event.Type == input.EVKey && held[event.Code])
+		})
+	}
+	transitions := e.applyFrame(original)
+	if len(transitions) == 0 && (len(frame.Events) == 0 || (len(frame.Events) == 1 && frame.Events[0].Type == input.EVSyn)) {
+		return Result{}
+	}
 	if len(transitions) == 0 {
 		if e.mode == modePrefixCandidate || e.mode == modeBindingCandidate {
 			e.buffer = append(e.buffer, frame.Clone())
@@ -96,6 +108,10 @@ func (e *Engine) handleFrame(frame input.Frame, now time.Time) Result {
 	buffered := e.mode == modePrefixCandidate || e.mode == modeBindingCandidate
 	if e.mode == modeIdle {
 		for _, tr := range transitions {
+			if tr.value == 1 && e.startRepeatedRemap(tr.key, now) {
+				buffered = true
+				break
+			}
 			if tr.value == 1 && e.startKeys[tr.key] {
 				e.startPrefixCandidate(tr.key, now)
 				buffered = true
@@ -153,6 +169,26 @@ func (e *Engine) handleFrame(frame input.Frame, now time.Time) Result {
 		case modePrefixCandidate:
 			if e.seq.matched >= 0 {
 				if heldModifiers, ready := prefixReadyForBinding(e.cfg.Prefixes[e.seq.matched].Keys, e.seq.held); ready {
+					if tap := e.cfg.Prefixes[e.seq.matched].Tap; tap != 0 {
+						for device, keys := range e.physical {
+							for code := range keys {
+								if heldModifiers[keycode.Canonical(code)] {
+									if e.suppressed[device] == nil {
+										e.suppressed[device] = make(map[uint16]bool)
+									}
+									e.suppressed[device][code] = true
+								}
+							}
+						}
+						for _, value := range []int32{1, 0} {
+							result.Forward = append(result.Forward, input.Frame{Device: "eakd-remap", Events: []input.Event{
+								{Type: input.EVKey, Code: tap, Value: value},
+								{Type: input.EVSyn, Code: input.SynReport},
+							}})
+						}
+						e.toIdle()
+						break
+					}
 					e.activePrefix = e.seq.matched
 					e.mode = modeAwaitBinding
 					e.bindingCarry = heldModifiers
@@ -230,6 +266,22 @@ func (e *Engine) Resync(device string, pressed map[uint16]bool) {
 	e.toIdle()
 }
 
+// ForwardPressed excludes consumed remap modifiers during input resynchronization.
+func (e *Engine) ForwardPressed(device string, pressed map[uint16]bool) map[uint16]bool {
+	result := make(map[uint16]bool)
+	for code, down := range pressed {
+		if down && !e.suppressed[device][code] {
+			result[code] = true
+		}
+	}
+	for code := range e.suppressed[device] {
+		if !pressed[code] {
+			delete(e.suppressed[device], code)
+		}
+	}
+	return result
+}
+
 func (e *Engine) applyFrame(frame input.Frame) []transition {
 	deviceState := e.physical[frame.Device]
 	if deviceState == nil {
@@ -263,11 +315,64 @@ func (e *Engine) applyFrame(frame input.Frame) []transition {
 		default:
 			continue
 		}
+		if e.suppressed[frame.Device][event.Code] {
+			if event.Value == 0 {
+				delete(e.suppressed[frame.Device], event.Code)
+			}
+			if event.Value != 0 || e.mode != modePrefixCandidate || !e.seq.held[logical] {
+				continue
+			}
+		}
 		transitions = append(transitions, transition{
 			key: logical, value: event.Value, countAfter: e.logicalCount[logical],
 		})
 	}
 	return transitions
+}
+
+// A consumed modifier can initiate further remap taps until it is released.
+func (e *Engine) startRepeatedRemap(first keycode.Logical, now time.Time) bool {
+	if keycode.IsLogicalModifier(first) {
+		return false
+	}
+	held := make(map[keycode.Logical]bool)
+	for _, keys := range e.suppressed {
+		for code := range keys {
+			held[keycode.Canonical(code)] = true
+		}
+	}
+	if len(held) == 0 {
+		return false
+	}
+	var possible []int
+	for i, chord := range e.cfg.Prefixes {
+		if chord.Tap == 0 || !slices.Contains(chord.Keys, first) {
+			continue
+		}
+		matches := true
+		for key := range held {
+			matches = matches && slices.Contains(chord.Keys, key)
+		}
+		for _, key := range chord.Keys {
+			if keycode.IsLogicalModifier(key) {
+				matches = matches && held[key]
+			}
+		}
+		if matches {
+			possible = append(possible, i)
+		}
+	}
+	if len(possible) == 0 {
+		return false
+	}
+	e.mode = modePrefixCandidate
+	e.seq = newSequence(possible)
+	for key := range held {
+		e.seq.seen[key] = true
+		e.seq.held[key] = true
+	}
+	e.deadline = now.Add(e.cfg.CandidateTimeout)
+	return true
 }
 
 func (e *Engine) startPrefixCandidate(first keycode.Logical, now time.Time) {

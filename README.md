@@ -146,6 +146,35 @@ are rejected because they cannot be resolved without another timeout layer.
 The three lock keys may be used in broker sequences, in that case they do not
 reach the userspace input stack.
 
+Simple remaps can be added alongside `prefixes`, or used on their own:
+
+```json
+{
+  "allowed_uids": [1000],
+  "remaps": [
+    {"keys": ["LOGO", "HOME"], "tap": "INSERT"},
+    {"keys": ["LOGO", "END"], "tap": "DELETE"}
+  ]
+}
+```
+
+Each source chord must contain a modifier and a non-modifier key. `tap` names
+one non-modifier key; common names accept either `HOME` or `KEY_HOME` spelling.
+Source chords share the prefix matcher and `candidate_timeout`: incomplete or
+failed candidates are replayed, and duplicate or subset-overlapping chords
+across prefixes and remaps are rejected.
+
+A successful remap consumes its source events and emits one output press and
+release when all source non-modifier keys are released. Keep Win held and tap
+Home repeatedly to produce repeated Insert taps. Holding Home does not generate
+Insert repeats; the chord must finish within `candidate_timeout` to remap.
+Remaining source modifiers stay suppressed until released. Other keys pass
+through without those consumed modifiers, while further matching remaps can
+reuse them. Release and press the modifier again to start an action prefix.
+Generated taps bypass chord matching. Other already-forwarded modifiers still
+apply to the output, and a target key already held on another keyboard remains
+held rather than being released by the tap.
+
 The broker configuration must be root-owned, must not be a symlink, and must not
 be group- or world-writable. `--allow-insecure-config` exists only for local
 development.
