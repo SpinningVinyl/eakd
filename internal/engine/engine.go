@@ -157,9 +157,14 @@ func (e *Engine) handleFrame(frame input.Frame, now time.Time) Result {
 			if e.seq.matched >= 0 {
 				if heldModifiers, ready := prefixReadyForBinding(e.cfg.Prefixes[e.seq.matched].Keys, e.seq.held); ready {
 					if tap := e.cfg.Prefixes[e.seq.matched].Tap; tap != 0 {
-						for device, keys := range e.physical {
-							for code := range keys {
-								if heldModifiers[keycode.Canonical(code)] {
+						// Only suppress presses consumed by this candidate; other
+						// physical variants may already be visible to the compositor.
+						for _, bufferedFrame := range e.buffer {
+							device := bufferedFrame.Device
+							for _, event := range bufferedFrame.Events {
+								code := event.Code
+								if event.Type == input.EVKey && event.Value == 1 &&
+									heldModifiers[keycode.Canonical(code)] && e.physical[device][code] {
 									if e.suppressed[device] == nil {
 										e.suppressed[device] = make(map[uint16]bool)
 									}

@@ -64,6 +64,34 @@ func TestRemapOutputThroughForwarder(t *testing.T) {
 	}
 }
 
+func TestRepeatedRemapPreservesForwardedModifierRelease(t *testing.T) {
+	writer := &recordingWriter{}
+	forwarder := NewForwarder(writer)
+	processor := engine.New(config.Config{CandidateTimeout: time.Second, Prefixes: []config.Prefix{{
+		Keys: []keycode.Logical{keycode.LogicalLogo, keycode.Logical(keycode.KeyHome)}, Tap: keycode.KeyInsert,
+	}}})
+	for _, event := range []struct {
+		code  uint16
+		value int32
+	}{
+		{keycode.KeyLeftMeta, 1}, {keycode.KeyHome, 1}, {keycode.KeyHome, 0},
+		// Right Win is forwarded while Left Win remains consumed by the remap.
+		{keycode.KeyRightMeta, 1},
+		{keycode.KeyHome, 1}, {keycode.KeyHome, 0},
+		{keycode.KeyRightMeta, 0}, {keycode.KeyLeftMeta, 0},
+	} {
+		result := processor.HandleFrame(keyFrame("kbd", event.code, event.value), time.Unix(1, 0))
+		for _, frame := range result.Forward {
+			if err := forwarder.Frame(frame); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if len(forwarder.counts) != 0 {
+		t.Fatalf("keys stuck after all physical releases: %v; events: %+v", forwarder.counts, writer.events)
+	}
+}
+
 func (w *recordingWriter) Write(event input.Event) error {
 	w.events = append(w.events, event)
 	return nil
