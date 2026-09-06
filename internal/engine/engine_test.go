@@ -33,7 +33,7 @@ func keyFrame(device string, code uint16, value int32) input.Frame {
 }
 
 func TestOrdinaryInputIsForwarded(t *testing.T) {
-	e := New(testConfig())
+	e := newTestEngine(testConfig())
 	frame := keyFrame("kbd0", keycode.KeyA, 1)
 	result := e.HandleFrame(frame, time.Unix(1, 0))
 	if len(result.Forward) != 1 || result.Forward[0].Events[0].Code != keycode.KeyA {
@@ -42,7 +42,7 @@ func TestOrdinaryInputIsForwarded(t *testing.T) {
 }
 
 func TestRecognizedSequenceIsConsumedAndEmitsAction(t *testing.T) {
-	e := New(testConfig())
+	e := newTestEngine(testConfig())
 	now := time.Unix(1, 0)
 	sequence := []input.Frame{
 		keyFrame("kbd0", keycode.KeyLeftMeta, 1),
@@ -73,7 +73,7 @@ func TestHeldPrefixModifierCarriesIntoBinding(t *testing.T) {
 		keycode.LogicalLogo,
 		keycode.Logical(keycode.Key1),
 	}
-	e := New(cfg)
+	e := newTestEngine(cfg)
 	now := time.Unix(1, 0)
 	sequence := []input.Frame{
 		keyFrame("kbd0", keycode.KeyLeftMeta, 1),
@@ -99,7 +99,7 @@ func TestHeldPrefixModifierCarriesIntoBinding(t *testing.T) {
 }
 
 func TestFailedPrefixCandidateIsReplayed(t *testing.T) {
-	e := New(testConfig())
+	e := newTestEngine(testConfig())
 	now := time.Unix(1, 0)
 	logo := keyFrame("kbd0", keycode.KeyLeftMeta, 1)
 	if result := e.HandleFrame(logo, now); len(result.Forward) != 0 {
@@ -117,14 +117,14 @@ func TestFailedPrefixCandidateIsReplayed(t *testing.T) {
 
 func TestCandidateTimeoutReplaysButPrefixTimeoutConsumes(t *testing.T) {
 	now := time.Unix(1, 0)
-	e := New(testConfig())
+	e := newTestEngine(testConfig())
 	e.HandleFrame(keyFrame("kbd0", keycode.KeyLeftMeta, 1), now)
 	result := e.HandleTimeout(now.Add(time.Second))
 	if len(result.Forward) != 1 {
 		t.Fatalf("incomplete candidate should replay, got %#v", result)
 	}
 
-	e = New(testConfig())
+	e = newTestEngine(testConfig())
 	frames := []input.Frame{
 		keyFrame("kbd0", keycode.KeyLeftMeta, 1),
 		keyFrame("kbd0", keycode.KeyT, 1),
@@ -141,7 +141,7 @@ func TestCandidateTimeoutReplaysButPrefixTimeoutConsumes(t *testing.T) {
 }
 
 func TestUnknownContinuationIsReplayedWithoutPrefix(t *testing.T) {
-	e := New(testConfig())
+	e := newTestEngine(testConfig())
 	now := time.Unix(1, 0)
 	for i, frame := range []input.Frame{
 		keyFrame("kbd0", keycode.KeyLeftMeta, 1),
@@ -158,7 +158,7 @@ func TestUnknownContinuationIsReplayedWithoutPrefix(t *testing.T) {
 }
 
 func TestExtraTransitionInCompletionFrameReplaysCandidate(t *testing.T) {
-	e := New(testConfig())
+	e := newTestEngine(testConfig())
 	now := time.Unix(1, 0)
 	completeTestPrefix(e, now)
 	e.HandleFrame(keyFrame("kbd0", keycode.Key1, 1), now.Add(5*time.Millisecond))
@@ -177,7 +177,7 @@ func TestExtraTransitionInCompletionFrameReplaysCandidate(t *testing.T) {
 }
 
 func TestFrameAtCandidateDeadlineCannotAdvancePrefix(t *testing.T) {
-	e := New(testConfig())
+	e := newTestEngine(testConfig())
 	now := time.Unix(1, 0)
 	e.HandleFrame(keyFrame("kbd0", keycode.KeyLeftMeta, 1), now)
 
@@ -193,7 +193,7 @@ func TestFrameAtCandidateDeadlineCannotAdvancePrefix(t *testing.T) {
 }
 
 func TestFrameAtSequenceDeadlineCannotStartContinuation(t *testing.T) {
-	e := New(testConfig())
+	e := newTestEngine(testConfig())
 	now := time.Unix(1, 0)
 	completeTestPrefix(e, now)
 	deadline, exists := e.Deadline()
@@ -211,7 +211,7 @@ func TestFrameAtSequenceDeadlineCannotStartContinuation(t *testing.T) {
 }
 
 func TestReleaseAtSequenceDeadlineCannotCompleteContinuation(t *testing.T) {
-	e := New(testConfig())
+	e := newTestEngine(testConfig())
 	now := time.Unix(1, 0)
 	completeTestPrefix(e, now)
 	deadline, exists := e.Deadline()
@@ -231,7 +231,7 @@ func TestReleaseAtSequenceDeadlineCannotCompleteContinuation(t *testing.T) {
 	}
 }
 
-func completeTestPrefix(e *Engine, now time.Time) {
+func completeTestPrefix(e *testEngine, now time.Time) {
 	for i, frame := range []input.Frame{
 		keyFrame("kbd0", keycode.KeyLeftMeta, 1),
 		keyFrame("kbd0", keycode.KeyT, 1),

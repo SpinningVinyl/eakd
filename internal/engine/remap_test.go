@@ -84,10 +84,10 @@ func TestSuppressionPreservesNonMatchingEvents(t *testing.T) {
 	}
 }
 
-func remapEngine() *Engine {
+func remapEngine() *testEngine {
 	cfg := testConfig()
-	cfg.Prefixes = append(cfg.Prefixes, config.Prefix{Keys: []keycode.Logical{keycode.LogicalLogo, keycode.Logical(keycode.KeyHome)}, Tap: keycode.KeyInsert})
-	return New(cfg)
+	cfg.Prefixes = append(cfg.Prefixes, config.Prefix{Keys: []keycode.Logical{keycode.LogicalLogo, keycode.Logical(keycode.KeyHome)}, Mode: config.Tap, Target: keycode.KeyInsert})
+	return newTestEngine(cfg)
 }
 
 func TestRemapTapAndModifierSuppression(t *testing.T) {
@@ -139,7 +139,7 @@ func TestRemapFailureAndTimeoutReplay(t *testing.T) {
 		e := remapEngine()
 		now := time.Unix(1, 0)
 		e.HandleFrame(keyFrame("kbd", keycode.KeyLeftMeta, 1), now)
-		var r Result
+		var r observedResult
 		if timeout {
 			r = e.HandleTimeout(now.Add(time.Second))
 		} else {
@@ -158,14 +158,13 @@ func TestRemapResyncKeepsConsumedModifierHidden(t *testing.T) {
 	e.HandleFrame(keyFrame("kbd", keycode.KeyHome, 1), now)
 	e.HandleFrame(keyFrame("kbd", keycode.KeyHome, 0), now)
 	pressed := map[uint16]bool{keycode.KeyLeftMeta: true, keycode.KeyA: true}
-	e.Resync("kbd", pressed)
-	visible := e.ForwardPressed("kbd", pressed)
+	r := e.Reconcile("kbd", pressed)
+	visible := r.Output[len(r.Output)-1].Pressed
 	if visible[keycode.KeyLeftMeta] || !visible[keycode.KeyA] {
 		t.Fatalf("visible keys: %v", visible)
 	}
-	e.Resync("kbd", nil)
-	e.ForwardPressed("kbd", nil)
-	if len(e.suppressed["kbd"]) != 0 {
+	e.Reconcile("kbd", nil)
+	if len(e.physical["kbd"]) != 0 || len(e.reuse) != 0 {
 		t.Fatal("removed device retained suppression")
 	}
 }
@@ -185,7 +184,7 @@ func TestRepeatedRemapModifierReleasedFirst(t *testing.T) {
 	if len(r.Forward) != 2 || r.Forward[0].Events[0].Code != keycode.KeyInsert {
 		t.Fatalf("missing tap: %+v", r)
 	}
-	if len(e.suppressed["kbd"]) != 0 {
+	if len(e.reuse) != 0 {
 		t.Fatal("released modifier remains suppressed")
 	}
 }

@@ -120,14 +120,20 @@ func run(parent context.Context, cfg config.Config, logger *log.Logger) error {
 	}
 
 	apply := func(result engine.Result) error {
-		for _, frame := range result.Forward {
-			if err := forwarder.Frame(frame); err != nil {
-				return err
+		for _, output := range result.Output {
+			switch output.Kind {
+			case engine.ForwardFrame:
+				if err := forwarder.Frame(output.Frame); err != nil {
+					return err
+				}
+			case engine.ReconcileDevice:
+				if err := forwarder.Resync(output.Device, output.Pressed); err != nil {
+					return err
+				}
+			case engine.EmitAction:
+				logger.Printf("action %s", output.Action)
+				server.Publish(output.Action)
 			}
-		}
-		for _, actionID := range result.Actions {
-			logger.Printf("action %s", actionID)
-			server.Publish(actionID)
 		}
 		resetTimer()
 		return nil
@@ -146,7 +152,7 @@ func run(parent context.Context, cfg config.Config, logger *log.Logger) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
+			return apply(processor.Close())
 		case <-managerReady:
 			managerReady = nil
 			if err := notifyReady(); err != nil {
@@ -161,7 +167,7 @@ func run(parent context.Context, cfg config.Config, logger *log.Logger) error {
 			if err != nil {
 				return err
 			}
-			return nil
+			return apply(processor.Close())
 		case now := <-timerChannel:
 			if err := apply(processor.HandleTimeout(now)); err != nil {
 				return fmt.Errorf("forward timeout buffer: %w", err)
@@ -169,7 +175,7 @@ func run(parent context.Context, cfg config.Config, logger *log.Logger) error {
 		case message, ok := <-messages:
 			if !ok {
 				if ctx.Err() != nil {
-					return nil
+					return apply(processor.Close())
 				}
 				return fmt.Errorf("input manager stopped unexpectedly")
 			}
@@ -182,19 +188,14 @@ func run(parent context.Context, cfg config.Config, logger *log.Logger) error {
 				}
 			}
 			if message.Resync != nil {
-				processor.Resync(message.Resync.Device, message.Resync.Pressed)
-				if err := forwarder.Resync(message.Resync.Device, processor.ForwardPressed(message.Resync.Device, message.Resync.Pressed)); err != nil {
+				if err := apply(processor.Reconcile(message.Resync.Device, message.Resync.Pressed)); err != nil {
 					return fmt.Errorf("resynchronize %s: %w", message.Resync.Device, err)
 				}
-				resetTimer()
 			}
 			if message.Removed != "" {
-				processor.Resync(message.Removed, nil)
-				processor.ForwardPressed(message.Removed, nil)
-				if err := forwarder.Resync(message.Removed, nil); err != nil {
+				if err := apply(processor.Reconcile(message.Removed, nil)); err != nil {
 					return fmt.Errorf("release removed device %s: %w", message.Removed, err)
 				}
-				resetTimer()
 			}
 		}
 	}

@@ -25,7 +25,7 @@ func TestRemapOutputThroughForwarder(t *testing.T) {
 		writer := &recordingWriter{}
 		forwarder := NewForwarder(writer)
 		processor := engine.New(config.Config{CandidateTimeout: time.Second, Prefixes: []config.Prefix{{
-			Keys: []keycode.Logical{keycode.LogicalLogo, keycode.Logical(keycode.KeyHome)}, Tap: keycode.KeyInsert,
+			Keys: []keycode.Logical{keycode.LogicalLogo, keycode.Logical(keycode.KeyHome)}, Mode: config.Tap, Target: keycode.KeyInsert,
 		}}})
 		if targetHeld {
 			if err := forwarder.Frame(keyFrame("other", keycode.KeyInsert, 1)); err != nil {
@@ -41,7 +41,11 @@ func TestRemapOutputThroughForwarder(t *testing.T) {
 			{keycode.KeyHome, 1}, {keycode.KeyHome, 0}, {keycode.KeyLeftMeta, 0},
 		} {
 			result := processor.HandleFrame(keyFrame("kbd", event.code, event.value), time.Unix(1, 0))
-			for _, frame := range result.Forward {
+			for _, out := range result.Output {
+				if out.Kind != engine.ForwardFrame {
+					t.Fatalf("unexpected output: %+v", out)
+				}
+				frame := out.Frame
 				if err := forwarder.Frame(frame); err != nil {
 					t.Fatal(err)
 				}
@@ -68,7 +72,7 @@ func TestRepeatedRemapPreservesForwardedModifierRelease(t *testing.T) {
 	writer := &recordingWriter{}
 	forwarder := NewForwarder(writer)
 	processor := engine.New(config.Config{CandidateTimeout: time.Second, Prefixes: []config.Prefix{{
-		Keys: []keycode.Logical{keycode.LogicalLogo, keycode.Logical(keycode.KeyHome)}, Tap: keycode.KeyInsert,
+		Keys: []keycode.Logical{keycode.LogicalLogo, keycode.Logical(keycode.KeyHome)}, Mode: config.Tap, Target: keycode.KeyInsert,
 	}}})
 	for _, event := range []struct {
 		code  uint16
@@ -81,7 +85,11 @@ func TestRepeatedRemapPreservesForwardedModifierRelease(t *testing.T) {
 		{keycode.KeyRightMeta, 0}, {keycode.KeyLeftMeta, 0},
 	} {
 		result := processor.HandleFrame(keyFrame("kbd", event.code, event.value), time.Unix(1, 0))
-		for _, frame := range result.Forward {
+		for _, out := range result.Output {
+			if out.Kind != engine.ForwardFrame {
+				t.Fatalf("unexpected output: %+v", out)
+			}
+			frame := out.Frame
 			if err := forwarder.Frame(frame); err != nil {
 				t.Fatal(err)
 			}

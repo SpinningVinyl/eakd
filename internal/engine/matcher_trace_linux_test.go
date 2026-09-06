@@ -158,15 +158,25 @@ func TestMatcherForwarderTraces(t *testing.T) {
 			now := time.Unix(1, 0)
 			for i, s := range append(slices.Clone(setup), tc.steps...) {
 				writer.events = nil
-				var r Result
+				var r observedResult
 				switch {
 				case s.timeout:
 					now = now.Add(time.Second)
 					r = e.HandleTimeout(now)
 				case s.resync:
-					e.Resync(s.device, s.pressed)
-					if err := forwarder.Resync(s.device, e.ForwardPressed(s.device, s.pressed)); err != nil {
-						t.Fatal(err)
+					for _, out := range e.Reconcile(s.device, s.pressed).Output {
+						switch out.Kind {
+						case ForwardFrame:
+							if err := forwarder.Frame(out.Frame); err != nil {
+								t.Fatal(err)
+							}
+						case ReconcileDevice:
+							if err := forwarder.Resync(out.Device, out.Pressed); err != nil {
+								t.Fatal(err)
+							}
+						default:
+							t.Fatal("recovery emitted an action")
+						}
 					}
 				default:
 					frame := input.Frame{Device: s.device, Events: s.events}
@@ -195,7 +205,7 @@ func TestMatcherForwarderTraces(t *testing.T) {
 			if _, pending := e.Deadline(); pending {
 				t.Fatal("deadline remains after trace")
 			}
-			if e.mode != modeIdle || len(e.buffer) != 0 || len(e.logicalCount) != 0 {
+			if e.mode != modeIdle || len(e.journal) != 0 || len(e.logicalCount) != 0 {
 				t.Fatalf("matcher state remains: %+v", e)
 			}
 			for device, keys := range e.physical {
@@ -203,10 +213,8 @@ func TestMatcherForwarderTraces(t *testing.T) {
 					t.Fatalf("physical keys remain on %s: %v", device, keys)
 				}
 			}
-			for device, keys := range e.suppressed {
-				if len(keys) != 0 {
-					t.Fatalf("suppression remains on %s: %v", device, keys)
-				}
+			if len(e.reuse) != 0 || len(e.active) != 0 {
+				t.Fatal("consumed or synthetic owners remain")
 			}
 		})
 	}

@@ -3,6 +3,7 @@
 package engine
 
 import (
+	"fmt"
 	"slices"
 	"time"
 
@@ -11,517 +12,328 @@ import (
 	"eak/internal/keycode"
 )
 
+type OutputKind uint8
+
+const (
+	ForwardFrame OutputKind = iota
+	ReconcileDevice
+	EmitAction
+)
+
+// Output operations must be applied synchronously in order. Stop on any error.
+type Output struct {
+	Kind    OutputKind
+	Frame   input.Frame
+	Device  string
+	Pressed map[uint16]bool
+	Action  string
+}
+
+type Result struct{ Output []Output }
+
+type disposition uint8
+
+const (
+	undecided disposition = iota
+	forwarded
+	consumed
+)
+
+// A release/repress creates a new lifetime, even within one input frame.
+type press struct {
+	id      uint64
+	device  string
+	code    uint16
+	logical keycode.Logical
+	down    bool
+	route   disposition
+}
+
 type mode uint8
 
 const (
 	modeIdle mode = iota
+	modeReserved
 	modePrefixCandidate
 	modeAwaitBinding
 	modeBindingCandidate
 )
 
-type Result struct {
-	Forward []input.Frame
-	Actions []string
+type candidate struct {
+	possible     []int
+	matched      int
+	members      map[keycode.Logical]*press
+	held         map[*press]bool
+	owned        []*press
+	matchMembers []*press
+	driver       *press
+	broken       bool
+	route        disposition
 }
 
-type transition struct {
-	key        keycode.Logical
-	value      int32
-	countAfter int
+type activation struct {
+	device  string
+	target  uint16
+	members []*press
+	driver  *press
+	live    bool
 }
 
-type sequence struct {
-	possible []int
-	seen     map[keycode.Logical]bool
-	held     map[keycode.Logical]bool
-	matched  int
+type recordedEvent struct {
+	event  input.Event
+	press  *press
+	output *Output
+	repeat *activation
 }
 
+type journalFrame struct {
+	device    string
+	events    []recordedEvent
+	dropScan  bool
+	candidate *candidate
+}
+
+// Physical ingestion owns physical/counts; matching owns candidate membership;
+// resolve is the only operation that commits a candidate's press dispositions.
 type Engine struct {
-	cfg config.Config
-
-	mode         mode
-	activePrefix int
-	seq          sequence
-	buffer       []input.Frame
-	deadline     time.Time
-
-	physical     map[string]map[uint16]bool
-	logicalCount map[keycode.Logical]int
-	startKeys    map[keycode.Logical]bool
-	bindingCarry map[keycode.Logical]bool
-	suppressed   map[string]map[uint16]bool
+	cfg            config.Config
+	physical       map[string]map[uint16]*press
+	logicalCount   map[keycode.Logical]int
+	nextID         uint64
+	mode           mode
+	seq            *candidate
+	activePrefix   int
+	carry          map[keycode.Logical]*press
+	reuse          map[*press]bool
+	deadline       time.Time
+	journal        []*journalFrame
+	active         []*activation
+	nextActivation uint64
 }
 
 func New(cfg config.Config) *Engine {
-	e := &Engine{
-		cfg:          cfg,
-		activePrefix: -1,
-		physical:     make(map[string]map[uint16]bool),
-		logicalCount: make(map[keycode.Logical]int),
-		startKeys:    make(map[keycode.Logical]bool),
-		suppressed:   make(map[string]map[uint16]bool),
+	return &Engine{cfg: cfg, physical: make(map[string]map[uint16]*press),
+		logicalCount: make(map[keycode.Logical]int), reuse: make(map[*press]bool), activePrefix: -1}
+}
+
+func (e *Engine) Deadline() (time.Time, bool) { return e.deadline, !e.deadline.IsZero() }
+
+func (e *Engine) HandleTimeout(now time.Time) Result {
+	if !e.deadline.IsZero() && !now.Before(e.deadline) {
+		e.fail()
 	}
-	for _, prefix := range cfg.Prefixes {
-		for _, key := range prefix.Keys {
-			if keycode.IsLogicalModifier(key) {
-				e.startKeys[key] = true
+	return e.drain()
+}
+
+func (e *Engine) HandleFrame(frame input.Frame, now time.Time) Result {
+	result := e.HandleTimeout(now)
+	f := &journalFrame{device: frame.Device, candidate: e.seq}
+	for _, p := range e.physical[frame.Device] {
+		f.dropScan = f.dropScan || p.route == consumed
+	}
+	e.journal = append(e.journal, f)
+	var history []transition
+	var fresh []*press
+	failed, meaningful := false, false
+	for _, event := range frame.Events {
+		p, tr, valid := e.ingest(frame.Device, event)
+		if valid && event.Value == 1 {
+			fresh = append(fresh, p)
+		}
+		// Pending modifier chatter must not grow an indefinite reservation.
+		chatter := e.mode == modeReserved && p != nil && p.route == undecided &&
+			(event.Value == 2 || event.Value == 1 && !valid)
+		if !chatter {
+			f.events = append(f.events, recordedEvent{event: event, press: p})
+		}
+		if event.Type != input.EVSyn && event.Type != input.EVMsc && !chatter {
+			meaningful = true
+		}
+		if valid {
+			outputs := e.activationEvents(tr)
+			if len(outputs) > 0 && e.mode == modeReserved {
+				e.fail()
+				failed = true
+			}
+			f.events = append(f.events, outputs...)
+		}
+		if failed {
+			continue
+		}
+		if e.mode == modeReserved && !chatter && event.Type != input.EVSyn && event.Type != input.EVMsc &&
+			(!valid || p != nil && p.route == forwarded) {
+			e.fail()
+			failed = true
+			continue
+		}
+		if !valid {
+			continue
+		}
+		started := false
+		if event.Value == 1 && p.route == undecided {
+			switch e.mode {
+			case modeIdle:
+				started = e.startSource(p, now)
+			case modeAwaitBinding:
+				e.startBinding()
+				started = true
 			}
 		}
-	}
-	return e
-}
-
-// HandleFrame updates authoritative physical state, advances the prefix
-// machine, and returns frames that are safe to expose through uinput.
-func (e *Engine) HandleFrame(frame input.Frame, now time.Time) Result {
-	result := e.expire(now)
-	next := e.handleFrame(frame, now)
-	result.Forward = append(result.Forward, next.Forward...)
-	result.Actions = append(result.Actions, next.Actions...)
-	return result
-}
-
-func (e *Engine) handleFrame(frame input.Frame, now time.Time) Result {
-	frame, transitions := e.applyFrame(frame, now)
-	if len(transitions) == 0 && (len(frame.Events) == 0 || (len(frame.Events) == 1 && frame.Events[0].Type == input.EVSyn)) {
-		return Result{}
-	}
-	if len(transitions) == 0 {
-		if e.mode == modePrefixCandidate || e.mode == modeBindingCandidate {
-			e.buffer = append(e.buffer, frame.Clone())
-			return Result{}
+		if started {
+			f.candidate = e.seq
+			// Preserve atomic matching when the modifier follows another key.
+			for _, earlier := range history {
+				if !e.advance(earlier, now) {
+					failed = true
+					break
+				}
+			}
 		}
-		return Result{Forward: []input.Frame{frame}}
+		if !failed && e.seq != nil && !e.advance(tr, now) {
+			failed = true
+		}
+		history = append(history, tr)
 	}
-
-	consumed := false
-
-	buffered := e.mode == modePrefixCandidate || e.mode == modeBindingCandidate
-	if e.mode == modeAwaitBinding {
-		for _, tr := range transitions {
-			if tr.value == 1 {
-				e.startBindingCandidate(tr.key)
-				buffered = true
+	// Output earlier in this same frame must not get trapped behind a later
+	// reserved modifier (notably a held remap's already-staged release).
+	if e.mode == modeReserved {
+		for _, r := range f.events {
+			if r.output != nil || r.event.Type != input.EVSyn && r.event.Type != input.EVMsc &&
+				(r.press == nil || r.press.route == forwarded) {
+				e.fail()
+				failed = true
 				break
 			}
 		}
+	}
+	if !failed {
+		e.complete(now)
+	}
+	// Ordinary presses cannot become candidates in a later frame.
+	for _, p := range fresh {
+		if p.route == undecided && (e.seq == nil || !slices.Contains(e.seq.owned, p)) {
+			p.route = forwarded
+		}
+	}
+	if e.mode == modeReserved && !meaningful {
+		e.journal = e.journal[:len(e.journal)-1]
+	}
+	result.Output = append(result.Output, e.drain().Output...)
+	return result
+}
 
-		// Only carry releases if no binding candidate was started.
-		if e.mode == modeAwaitBinding {
-			consumed = true
-			for _, tr := range transitions {
-				carriedRelease := tr.value == 0 && e.bindingCarry[tr.key]
-				if !carriedRelease {
-					consumed = false
-					continue
-				}
-				if tr.countAfter == 0 {
-					delete(e.bindingCarry, tr.key)
-				}
+func (e *Engine) resolve(route disposition) {
+	if e.seq == nil {
+		return
+	}
+	for _, p := range e.seq.owned {
+		if p.route != undecided {
+			panic("engine: resolving an already owned press")
+		}
+		p.route = route
+	}
+	e.seq.route = route
+}
+
+func (e *Engine) idle() {
+	e.mode, e.seq, e.activePrefix, e.carry = modeIdle, nil, -1, nil
+	e.deadline = time.Time{}
+}
+
+func (e *Engine) fail() { e.resolve(forwarded); e.idle() }
+
+func keyOutput(device string, code uint16, value int32) Output {
+	return Output{Kind: ForwardFrame, Frame: input.Frame{Device: device, Events: []input.Event{
+		{Type: input.EVKey, Code: code, Value: value}, {Type: input.EVSyn, Code: input.SynReport},
+	}}}
+}
+
+func (e *Engine) queueOutput(output Output) {
+	e.journal = append(e.journal, &journalFrame{events: []recordedEvent{{output: &output}}})
+}
+
+func (e *Engine) drain() Result {
+	var result Result
+	count := 0
+	for _, f := range e.journal {
+		pending, hasKey, visibleKey := false, false, false
+		for _, r := range f.events {
+			pending = pending || r.press != nil && r.press.route == undecided
+			if r.event.Type == input.EVKey {
+				hasKey = true
+				visibleKey = visibleKey || r.press == nil || r.press.route == forwarded
 			}
 		}
-	}
-
-	if buffered {
-		e.buffer = append(e.buffer, frame.Clone())
-	}
-
-	var result Result
-	for _, tr := range transitions {
-		switch e.mode {
-		case modePrefixCandidate:
-			e.advancePrefix(tr, &result)
-		case modeBindingCandidate:
-			e.advanceBinding(tr, &result)
-		}
-		// A failed sequence may flush the complete frame. Do not begin a new
-		// candidate from a later event in that already-forwarded frame.
-		if len(result.Forward) != 0 {
+		if pending {
 			break
 		}
-	}
-	// Complete a chord only after every transition in its atomic frame has
-	// been validated. Any extra key instead fails and replays the candidate.
-	if len(result.Forward) == 0 {
-		switch e.mode {
-		case modePrefixCandidate:
-			if e.seq.matched >= 0 {
-				if heldModifiers, ready := prefixReadyForBinding(e.cfg.Prefixes[e.seq.matched].Keys, e.seq.held); ready {
-					if tap := e.cfg.Prefixes[e.seq.matched].Tap; tap != 0 {
-						// Only suppress presses consumed by this candidate; other
-						// physical variants may already be visible to the compositor.
-						for _, bufferedFrame := range e.buffer {
-							device := bufferedFrame.Device
-							for _, event := range bufferedFrame.Events {
-								code := event.Code
-								if event.Type == input.EVKey && event.Value == 1 &&
-									heldModifiers[keycode.Canonical(code)] && e.physical[device][code] {
-									if e.suppressed[device] == nil {
-										e.suppressed[device] = make(map[uint16]bool)
-									}
-									e.suppressed[device][code] = true
-								}
-							}
-						}
-						for _, value := range []int32{1, 0} {
-							result.Forward = append(result.Forward, input.Frame{Device: "eakd-remap", Events: []input.Event{
-								{Type: input.EVKey, Code: tap, Value: value},
-								{Type: input.EVSyn, Code: input.SynReport},
-							}})
-						}
-						e.toIdle()
-						break
-					}
-					e.activePrefix = e.seq.matched
-					e.mode = modeAwaitBinding
-					e.bindingCarry = heldModifiers
-					e.seq = sequence{}
-					e.buffer = nil // consume the complete prefix
-					e.deadline = now.Add(e.cfg.SequenceTimeout)
+		var events []input.Event
+		flush := func() {
+			if len(events) > 0 {
+				events = append(events, input.Event{Type: input.EVSyn, Code: input.SynReport})
+				result.Output = append(result.Output, Output{Kind: ForwardFrame, Frame: input.Frame{Device: f.device, Events: events}})
+				events = nil
+			}
+		}
+		for _, r := range f.events {
+			if r.output != nil {
+				if r.repeat != nil && !r.repeat.live {
+					continue
 				}
+				flush()
+				result.Output = append(result.Output, *r.output)
+				continue
 			}
-		case modeBindingCandidate:
-			bindings := e.cfg.Prefixes[e.activePrefix].Bindings
-			if e.seq.matched >= 0 && chordReleased(bindings[e.seq.matched].Keys, e.seq.held) {
-				result.Actions = append(result.Actions, bindings[e.seq.matched].Action)
-				e.toIdle() // consume the continuation
+			if r.event.Type == input.EVSyn || r.press != nil && r.press.route == consumed {
+				continue
 			}
+			if r.event.Type == input.EVMsc && (f.dropScan || hasKey && !visibleKey || !hasKey && f.candidate != nil && f.candidate.route == consumed) {
+				continue
+			}
+			events = append(events, r.event)
 		}
+		flush()
+		count++
 	}
-
-	if !buffered && !consumed && len(result.Forward) == 0 && len(result.Actions) == 0 {
-		result.Forward = append(result.Forward, frame)
+	clear(e.journal[:count])
+	e.journal = e.journal[count:]
+	if len(e.journal) == 0 {
+		e.journal = nil
 	}
 	return result
 }
 
-// HandleTimeout resolves the currently ambiguous input. An incomplete prefix
-// is replayed. A recognized prefix remains consumed, while an incomplete
-// continuation is replayed.
-func (e *Engine) HandleTimeout(now time.Time) Result {
-	return e.expire(now)
+func (e *Engine) activate(c *candidate, target uint16) {
+	e.nextActivation++
+	a := &activation{device: fmt.Sprintf("eakd-remap:%d", e.nextActivation), target: target,
+		members: c.matchMembers, driver: c.driver, live: true}
+	e.queueOutput(keyOutput(a.device, target, 1))
+	if c.broken {
+		e.stopActivation(a)
+		return
+	}
+	e.active = append(e.active, a)
 }
 
-func (e *Engine) expire(now time.Time) Result {
-	if e.deadline.IsZero() || now.Before(e.deadline) {
-		return Result{}
-	}
-	var result Result
-	switch e.mode {
-	case modePrefixCandidate, modeBindingCandidate:
-		result.Forward = append(result.Forward, e.buffer...)
-	case modeAwaitBinding:
-		// The prefix was recognized and is intentionally consumed.
-	}
-	e.toIdle()
-	return result
+func (e *Engine) stopActivation(a *activation) {
+	a.live = false
+	e.queueOutput(keyOutput(a.device, a.target, 0))
+	e.queueOutput(Output{Kind: ReconcileDevice, Device: a.device})
 }
 
-func (e *Engine) Deadline() (time.Time, bool) {
-	return e.deadline, !e.deadline.IsZero()
-}
-
-// Resync replaces one device's physical state after SYN_DROPPED or removal.
-// Ambiguous buffered input cannot be trusted after an overrun and is dropped;
-// the forwarder independently reconciles its virtual state to Pressed.
-func (e *Engine) Resync(device string, pressed map[uint16]bool) {
-	old := e.physical[device]
-	for code := range old {
-		logical := keycode.Canonical(code)
-		e.logicalCount[logical]--
-		if e.logicalCount[logical] <= 0 {
-			delete(e.logicalCount, logical)
+func (e *Engine) activationEvents(tr transition) []recordedEvent {
+	var events []recordedEvent
+	for _, a := range e.active {
+		if tr.value == 0 && slices.Contains(a.members, tr.press) {
+			a.live = false
+			up := keyOutput(a.device, a.target, 0)
+			cleanup := Output{Kind: ReconcileDevice, Device: a.device}
+			events = append(events, recordedEvent{output: &up}, recordedEvent{output: &cleanup})
+		} else if tr.value == 2 && tr.press == a.driver {
+			repeat := keyOutput(a.device, a.target, 2)
+			events = append(events, recordedEvent{output: &repeat, repeat: a})
 		}
 	}
-	if len(pressed) == 0 {
-		delete(e.physical, device)
-	} else {
-		replacement := make(map[uint16]bool, len(pressed))
-		for code, down := range pressed {
-			if !down {
-				continue
-			}
-			replacement[code] = true
-			e.logicalCount[keycode.Canonical(code)]++
-		}
-		e.physical[device] = replacement
-	}
-	e.toIdle()
-}
-
-// ForwardPressed excludes consumed remap modifiers during input resynchronization.
-func (e *Engine) ForwardPressed(device string, pressed map[uint16]bool) map[uint16]bool {
-	result := make(map[uint16]bool)
-	for code, down := range pressed {
-		if down && !e.suppressed[device][code] {
-			result[code] = true
-		}
-	}
-	for code := range e.suppressed[device] {
-		if !pressed[code] {
-			delete(e.suppressed[device], code)
-		}
-	}
-	return result
-}
-
-func (e *Engine) applyFrame(frame input.Frame, now time.Time) (input.Frame, []transition) {
-	deviceState := e.physical[frame.Device]
-	if deviceState == nil {
-		deviceState = make(map[uint16]bool)
-		e.physical[frame.Device] = deviceState
-	}
-	filter := len(e.suppressed[frame.Device]) != 0
-	visible := frame
-	if filter {
-		visible.Events = make([]input.Event, 0, len(frame.Events))
-	}
-	var transitions []transition
-	for _, event := range frame.Events {
-		// Decide visibility before a release clears suppression, independently
-		// of whether the event produces a matching transition. Keep the existing
-		// policy of dropping scan codes throughout a frame that starts suppressed.
-		if filter && event.Type != input.EVMsc &&
-			(event.Type != input.EVKey || !e.suppressed[frame.Device][event.Code]) {
-			visible.Events = append(visible.Events, event)
-		}
-		if event.Type != input.EVKey {
-			continue
-		}
-		logical := keycode.Canonical(event.Code)
-		switch event.Value {
-		case 1:
-			if deviceState[event.Code] {
-				continue
-			}
-			deviceState[event.Code] = true
-			e.logicalCount[logical]++
-		case 0:
-			if !deviceState[event.Code] {
-				continue
-			}
-			delete(deviceState, event.Code)
-			e.logicalCount[logical]--
-			if e.logicalCount[logical] <= 0 {
-				delete(e.logicalCount, logical)
-			}
-		case 2:
-			// Repeats affect neither physical nor matching state.
-		default:
-			continue
-		}
-		if e.suppressed[frame.Device][event.Code] {
-			if event.Value == 0 {
-				delete(e.suppressed[frame.Device], event.Code)
-			}
-			if event.Value != 0 || e.mode != modePrefixCandidate || !e.seq.held[logical] {
-				continue
-			}
-		}
-		// Start candidates with the modifiers held at this event, before a
-		// later release in the same frame changes suppression. Matching and
-		// completion still validate the entire frame below in handleFrame.
-		if e.mode == modeIdle && event.Value == 1 {
-			if !e.startRepeatedRemap(logical, now) && e.startKeys[logical] {
-				e.startPrefixCandidate(logical, now)
-			}
-		}
-		transitions = append(transitions, transition{
-			key: logical, value: event.Value, countAfter: e.logicalCount[logical],
-		})
-	}
-	return visible, transitions
-}
-
-// A consumed modifier can initiate further remap taps until it is released.
-func (e *Engine) startRepeatedRemap(first keycode.Logical, now time.Time) bool {
-	if keycode.IsLogicalModifier(first) {
-		return false
-	}
-	held := make(map[keycode.Logical]bool)
-	for _, keys := range e.suppressed {
-		for code := range keys {
-			held[keycode.Canonical(code)] = true
-		}
-	}
-	if len(held) == 0 {
-		return false
-	}
-	var possible []int
-	for i, chord := range e.cfg.Prefixes {
-		if chord.Tap == 0 || !slices.Contains(chord.Keys, first) {
-			continue
-		}
-		matches := true
-		for key := range held {
-			matches = matches && slices.Contains(chord.Keys, key)
-		}
-		for _, key := range chord.Keys {
-			if keycode.IsLogicalModifier(key) {
-				matches = matches && held[key]
-			}
-		}
-		if matches {
-			possible = append(possible, i)
-		}
-	}
-	if len(possible) == 0 {
-		return false
-	}
-	e.mode = modePrefixCandidate
-	e.seq = newSequence(possible)
-	for key := range held {
-		e.seq.seen[key] = true
-		e.seq.held[key] = true
-	}
-	e.deadline = now.Add(e.cfg.CandidateTimeout)
-	return true
-}
-
-func (e *Engine) startPrefixCandidate(first keycode.Logical, now time.Time) {
-	possible := make([]int, 0, len(e.cfg.Prefixes))
-	for i, prefix := range e.cfg.Prefixes {
-		if slices.Contains(prefix.Keys, first) {
-			possible = append(possible, i)
-		}
-	}
-	e.mode = modePrefixCandidate
-	e.seq = newSequence(possible)
-	e.deadline = now.Add(e.cfg.CandidateTimeout)
-}
-
-func (e *Engine) advancePrefix(tr transition, result *Result) {
-	if !e.advanceSequence(tr, func(index int) []keycode.Logical {
-		return e.cfg.Prefixes[index].Keys
-	}) {
-		result.Forward = append(result.Forward, e.buffer...)
-		e.toIdle()
-	}
-}
-
-func (e *Engine) startBindingCandidate(first keycode.Logical) {
-	bindings := e.cfg.Prefixes[e.activePrefix].Bindings
-	possible := make([]int, 0, len(bindings))
-	for i, binding := range e.cfg.Prefixes[e.activePrefix].Bindings {
-		if !slices.Contains(binding.Keys, first) {
-			continue
-		}
-		includesCarry := true
-		for key := range e.bindingCarry {
-			if !slices.Contains(binding.Keys, key) {
-				includesCarry = false
-				break
-			}
-		}
-		if includesCarry {
-			possible = append(possible, i)
-		}
-	}
-	e.mode = modeBindingCandidate
-	e.seq = newSequence(possible)
-	for key := range e.bindingCarry {
-		e.seq.seen[key] = true
-		e.seq.held[key] = true
-	}
-}
-
-func (e *Engine) advanceBinding(tr transition, result *Result) {
-	bindings := e.cfg.Prefixes[e.activePrefix].Bindings
-	if !e.advanceSequence(tr, func(index int) []keycode.Logical { return bindings[index].Keys }) {
-		result.Forward = append(result.Forward, e.buffer...)
-		e.toIdle()
-	}
-}
-
-// advanceSequence returns false when the observed combination can no longer
-// match. A chord is recognized only while all its keys are simultaneously held.
-func (e *Engine) advanceSequence(tr transition, chord func(int) []keycode.Logical) bool {
-	if tr.value == 2 {
-		return true
-	}
-	if tr.value == 1 {
-		// reject a candidate when a sequence keypress is not the first global press
-		if tr.countAfter != 1 {
-			return false
-		}
-		e.seq.seen[tr.key] = true
-		e.seq.held[tr.key] = true
-		filtered := e.seq.possible[:0]
-		for _, index := range e.seq.possible {
-			if slices.Contains(chord(index), tr.key) {
-				filtered = append(filtered, index)
-			}
-		}
-		e.seq.possible = filtered
-		if len(filtered) == 0 {
-			return false
-		}
-		for _, index := range filtered {
-			if chordHeldAndSeen(chord(index), e.seq.seen, e.seq.held) {
-				e.seq.matched = index
-				break
-			}
-		}
-		return true
-	}
-	if tr.value == 0 && tr.countAfter == 0 {
-		e.seq.held[tr.key] = false
-		if e.seq.matched < 0 {
-			return false
-		}
-		if !slices.Contains(chord(e.seq.matched), tr.key) {
-			return false
-		}
-	}
-	return true
-}
-
-func newSequence(possible []int) sequence {
-	return sequence{
-		possible: possible,
-		seen:     make(map[keycode.Logical]bool),
-		held:     make(map[keycode.Logical]bool),
-		matched:  -1,
-	}
-}
-
-func (e *Engine) toIdle() {
-	e.mode = modeIdle
-	e.activePrefix = -1
-	e.seq = sequence{}
-	e.buffer = nil
-	e.deadline = time.Time{}
-	e.bindingCarry = nil
-}
-
-func chordHeldAndSeen(keys []keycode.Logical, seen, held map[keycode.Logical]bool) bool {
-	for _, key := range keys {
-		if !seen[key] || !held[key] {
-			return false
-		}
-	}
-	return true
-}
-
-func chordReleased(keys []keycode.Logical, held map[keycode.Logical]bool) bool {
-	for _, key := range keys {
-		if held[key] {
-			return false
-		}
-	}
-	return true
-}
-
-func prefixReadyForBinding(prefixKeys []keycode.Logical, held map[keycode.Logical]bool) (carry map[keycode.Logical]bool, ready bool) {
-	result := make(map[keycode.Logical]bool)
-	for _, key := range prefixKeys {
-		if held[key] && keycode.IsLogicalModifier(key) {
-			result[key] = true
-		} else if held[key] && !keycode.IsLogicalModifier(key) {
-			return nil, false
-		}
-	}
-	return result, true
+	e.active = slices.DeleteFunc(e.active, func(a *activation) bool { return !a.live })
+	return events
 }

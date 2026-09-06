@@ -20,7 +20,7 @@ func TestPrefixTraceCompatibility(t *testing.T) {
 	type step struct {
 		frame        input.Frame
 		at, deadline time.Duration
-		want         Result
+		want         observedResult
 	}
 	prefix := []step{
 		{frame: logoDown, deadline: 500 * time.Millisecond},
@@ -34,32 +34,32 @@ func TestPrefixTraceCompatibility(t *testing.T) {
 	}{
 		{"success", append(append([]step(nil), prefix...),
 			step{frame: oneDown, deadline: 750 * time.Millisecond},
-			step{frame: oneUp, want: Result{Actions: []string{"terminal.one"}}})},
+			step{frame: oneUp, want: observedResult{Actions: []string{"terminal.one"}}})},
 		// A key arriving exactly at the source deadline must replay the prefix.
 		{"source deadline", []step{
 			{frame: logoDown, deadline: 500 * time.Millisecond},
-			{frame: tDown, at: 500 * time.Millisecond, want: Result{Forward: []input.Frame{logoDown, tDown}}},
-			{frame: tUp, at: 500 * time.Millisecond, want: Result{Forward: []input.Frame{tUp}}},
-			{frame: logoUp, at: 500 * time.Millisecond, want: Result{Forward: []input.Frame{logoUp}}},
+			{frame: tDown, at: 500 * time.Millisecond, want: observedResult{Forward: []input.Frame{logoDown, tDown}}},
+			{frame: tUp, at: 500 * time.Millisecond, want: observedResult{Forward: []input.Frame{tUp}}},
+			{frame: logoUp, at: 500 * time.Millisecond, want: observedResult{Forward: []input.Frame{logoUp}}},
 		}},
 		// Starting a binding just before expiry must not extend its deadline.
 		{"binding deadline", append(append([]step(nil), prefix...),
 			step{frame: oneDown, at: 749 * time.Millisecond, deadline: 750 * time.Millisecond},
-			step{frame: oneUp, at: 750 * time.Millisecond, want: Result{Forward: []input.Frame{oneDown, oneUp}}})},
+			step{frame: oneUp, at: 750 * time.Millisecond, want: observedResult{Forward: []input.Frame{oneDown, oneUp}}})},
 		// A binding cannot start at the sequence deadline; its keys pass through.
 		{"sequence deadline", append(append([]step(nil), prefix...),
-			step{frame: oneDown, at: 750 * time.Millisecond, want: Result{Forward: []input.Frame{oneDown}}},
-			step{frame: oneUp, at: 750 * time.Millisecond, want: Result{Forward: []input.Frame{oneUp}}})},
+			step{frame: oneDown, at: 750 * time.Millisecond, want: observedResult{Forward: []input.Frame{oneDown}}},
+			step{frame: oneUp, at: 750 * time.Millisecond, want: observedResult{Forward: []input.Frame{oneUp}}})},
 		{"combined source press", []step{
 			{frame: input.Frame{Device: "kbd", Events: []input.Event{logoDown.Events[0], tDown.Events[0], tDown.Events[1]}}, deadline: 500 * time.Millisecond},
 			{frame: tUp, deadline: 750 * time.Millisecond},
 			{frame: logoUp, deadline: 750 * time.Millisecond},
 			{frame: oneDown, deadline: 750 * time.Millisecond},
-			{frame: oneUp, want: Result{Actions: []string{"terminal.one"}}},
+			{frame: oneUp, want: observedResult{Actions: []string{"terminal.one"}}},
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			e := New(testConfig())
+			e := newTestEngine(testConfig())
 			start := time.Unix(1, 0)
 			for i, s := range tc.steps {
 				if got := e.HandleFrame(s.frame, start.Add(s.at)); !reflect.DeepEqual(got, s.want) {

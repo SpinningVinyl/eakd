@@ -175,6 +175,53 @@ Generated taps bypass chord matching. Other already-forwarded modifiers still
 apply to the output, and a target key already held on another keyboard remains
 held rather than being released by the tap.
 
+To wait indefinitely for the initial modifier and repeat a held remapped key,
+opt into modifier reservation and use `hold` instead of `tap`:
+
+```json
+{
+  "allowed_uids": [1000],
+  "reserved_modifiers": ["LOGO"],
+  "remaps": [
+    {"keys": ["LOGO", "HOME"], "hold": "INSERT"}
+  ]
+}
+```
+
+With this configuration, Win can be held for ten seconds before Home is
+pressed. Win stays hidden during that initial wait. Releasing unused Win replays
+its press and release; pressing an unrelated key forwards Win first, then the
+other key. An already-forwarded Win press cannot become reserved again until
+released. Reservation also applies when that modifier is shared with action
+prefixes. Reserving Ctrl or Shift similarly delays their normal desktop behavior.
+
+Additional compatible reserved modifiers can join the wait. The first compatible
+non-reserved key starts `candidate_timeout`; a failed or expired attempt replays
+the pending input. Already-forwarded keys' releases and repeats resolve the
+reservation immediately so ordinary typing cannot be blocked indefinitely.
+
+A `hold` remap emits target-down as soon as its complete source chord matches,
+after validating the whole input frame. It translates source repeat events into
+target repeat events and emits target-up when any source member is released.
+Remaining consumed source keys stay hidden until released; the consumed modifier
+can be reused for another remap. A recognized held output has no timeout. For
+multi-key sources, only the last non-modifier pressed to complete the chord drives
+repetition. Devices that send no repeat events produce held down/up events without
+engine-generated repeats; desktop repeat behavior also depends on the input stack.
+There is no additional daemon repeat timer.
+
+Each remap must specify exactly one of `tap` or `hold`. Existing `tap`
+configurations retain their timing and release-triggered behavior unless modifier
+reservation is explicitly enabled. Reserved modifiers must be distinct modifiers
+used by a configured source chord. No modifiers are reserved by default.
+
+The engine tracks each physical press separately, so a remap never consumes the
+release of an already-forwarded press. Device removal or resynchronization ends
+affected held outputs without releasing another keyboard's ownership of the same
+target. A snapshot cannot distinguish a release/repress that occurred entirely
+during lost input: a previously consumed key still reported down remains hidden
+until its next observed release. Snapshots never trigger actions or remaps.
+
 The broker configuration must be root-owned, must not be a symlink, and must not
 be group- or world-writable. `--allow-insecure-config` exists only for local
 development.
