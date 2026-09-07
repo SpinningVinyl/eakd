@@ -167,6 +167,75 @@ func TestReservedWaitAndHeldRepeats(t *testing.T) {
 	}
 }
 
+// Repeats from an ended remap must not grow a later indefinite reservation.
+func TestReservedConsumedRepeatsStayBounded(t *testing.T) {
+	r := newRig(t, heldConfig())
+	r.key("kbd", keycode.KeyLeftMeta, 1)
+	r.key("kbd", keycode.KeyHome, 1)
+	r.key("kbd", keycode.KeyLeftMeta, 0)
+	r.want(ev(keycode.KeyInsert, 1), ev(keycode.KeyInsert, 0))
+	r.key("kbd", keycode.KeyLeftMeta, 1)
+	for i := 0; i < 1000; i++ {
+		r.key("kbd", keycode.KeyHome, 2)
+	}
+	r.want()
+	if len(r.e.journal) > 2 {
+		t.Fatalf("reserved journal grew to %d frames", len(r.e.journal))
+	}
+	r.key("kbd", keycode.KeyHome, 0)
+	r.key("kbd", keycode.KeyLeftMeta, 0)
+	r.want(ev(keycode.KeyLeftMeta, 1), ev(keycode.KeyLeftMeta, 0))
+}
+
+// Dropping hidden raw repeats must still deliver a live remap's generated repeat.
+func TestReservedWaitPreservesActiveRemapRepeat(t *testing.T) {
+	cfg := heldConfig()
+	cfg.ReservedModifiers = append(cfg.ReservedModifiers, keycode.LogicalCtrl)
+	cfg.Prefixes = append(cfg.Prefixes, config.Prefix{Keys: []keycode.Logical{keycode.LogicalCtrl, keycode.Logical(keycode.KeyB)}, Mode: config.Hold, Target: keycode.KeyC})
+	r := newRig(t, cfg)
+	r.key("kbd", keycode.KeyLeftMeta, 1)
+	r.key("kbd", keycode.KeyHome, 1)
+	r.want(ev(keycode.KeyInsert, 1))
+	r.key("kbd", keycode.KeyLeftCtrl, 1)
+	r.want()
+	r.key("kbd", keycode.KeyHome, 2)
+	r.want(ev(keycode.KeyLeftCtrl, 1), ev(keycode.KeyInsert, 2))
+	r.key("kbd", keycode.KeyHome, 0)
+	r.key("kbd", keycode.KeyLeftMeta, 0)
+	r.key("kbd", keycode.KeyLeftCtrl, 0)
+	r.want(ev(keycode.KeyInsert, 0), ev(keycode.KeyLeftCtrl, 0))
+}
+
+// A same-frame release/repress must leave the new source press mapped and held.
+func TestHeldRemapSameFrameRepress(t *testing.T) {
+	r := newRig(t, heldConfig())
+	r.key("kbd", keycode.KeyLeftMeta, 1)
+	r.apply(r.e.HandleFrame(input.Frame{Device: "kbd", Events: []input.Event{
+		ev(keycode.KeyHome, 1), ev(keycode.KeyHome, 0), ev(keycode.KeyHome, 1),
+		{Type: input.EVSyn, Code: input.SynReport},
+	}}, r.now))
+	if !r.w.down[keycode.KeyInsert] {
+		t.Fatal("Home remains physically down but held Insert is up")
+	}
+	r.want(ev(keycode.KeyInsert, 1))
+	r.key("kbd", keycode.KeyHome, 2)
+	r.want(ev(keycode.KeyInsert, 2))
+	r.key("kbd", keycode.KeyHome, 0)
+	r.want(ev(keycode.KeyInsert, 0))
+	r.key("kbd", keycode.KeyLeftMeta, 0)
+	r.want()
+
+	// A later incompatible key still rejects the entire atomic frame.
+	r = newRig(t, heldConfig())
+	r.key("kbd", keycode.KeyLeftMeta, 1)
+	r.apply(r.e.HandleFrame(input.Frame{Device: "kbd", Events: []input.Event{
+		ev(keycode.KeyHome, 1), ev(keycode.KeyHome, 0), ev(keycode.KeyHome, 1),
+		ev(keycode.KeyA, 1), {Type: input.EVSyn, Code: input.SynReport},
+	}}, r.now))
+	r.want(ev(keycode.KeyLeftMeta, 1), ev(keycode.KeyHome, 1), ev(keycode.KeyHome, 0),
+		ev(keycode.KeyHome, 1), ev(keycode.KeyA, 1))
+}
+
 func TestReservedFallbackAndPrefix(t *testing.T) {
 	for _, outcome := range []string{"release", "unrelated", "forwarded release", "prefix", "timeout"} {
 		t.Run(outcome, func(t *testing.T) {

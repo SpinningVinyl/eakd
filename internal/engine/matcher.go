@@ -123,7 +123,9 @@ func (e *Engine) advance(tr transition, now time.Time) bool {
 		if e.mode == modeReserved && !slices.Contains(e.cfg.ReservedModifiers, p.logical) {
 			e.mode, e.deadline = modePrefixCandidate, now.Add(e.cfg.CandidateTimeout)
 		}
-		if c.matched < 0 || e.mode == modeBindingCandidate {
+		// A held source may release/repress before this frame is committed.
+		// Refresh its exact lifetimes when the complete chord is held again.
+		if c.matched < 0 || e.mode == modeBindingCandidate || e.cfg.Prefixes[c.matched].Mode == config.Hold {
 			for _, index := range c.possible {
 				all := true
 				for _, key := range e.chord(index) {
@@ -131,6 +133,7 @@ func (e *Engine) advance(tr transition, now time.Time) bool {
 				}
 				if all {
 					c.matched = index
+					c.broken = false
 					c.matchMembers = nil
 					for _, key := range e.chord(index) {
 						c.matchMembers = append(c.matchMembers, c.members[key])

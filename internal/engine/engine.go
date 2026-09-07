@@ -140,8 +140,9 @@ func (e *Engine) HandleFrame(frame input.Frame, now time.Time) Result {
 		if valid && event.Value == 1 {
 			fresh = append(fresh, p)
 		}
-		// Pending modifier chatter must not grow an indefinite reservation.
-		chatter := e.mode == modeReserved && p != nil && p.route == undecided &&
+		// Hidden chatter must not grow an indefinite reservation. Live remap
+		// repeats still pass through activationEvents below.
+		chatter := e.mode == modeReserved && p != nil && p.route != forwarded &&
 			(event.Value == 2 || event.Value == 1 && !valid)
 		if !chatter {
 			f.events = append(f.events, recordedEvent{event: event, press: p})
