@@ -27,6 +27,7 @@ build:
 
 test:
 	go test ./...
+	go test ./internal/engine -bench . -benchmem
 
 vet:
 	go vet -buildvcs=false ./...

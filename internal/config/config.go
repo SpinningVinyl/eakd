@@ -15,11 +15,19 @@ import (
 )
 
 type File struct {
-	CandidateTimeout string       `json:"candidate_timeout"`
-	SequenceTimeout  string       `json:"sequence_timeout"`
-	SocketPath       string       `json:"socket_path"`
-	AllowedUIDs      []uint32     `json:"allowed_uids"`
-	Prefixes         []FilePrefix `json:"prefixes"`
+	CandidateTimeout  string       `json:"candidate_timeout"`
+	SequenceTimeout   string       `json:"sequence_timeout"`
+	SocketPath        string       `json:"socket_path"`
+	AllowedUIDs       []uint32     `json:"allowed_uids"`
+	Prefixes          []FilePrefix `json:"prefixes"`
+	Remaps            []FileRemap  `json:"remaps"`
+	ReservedModifiers []string     `json:"reserved_modifiers"`
+}
+
+type FileRemap struct {
+	Keys []string `json:"keys"`
+	Tap  string   `json:"tap"`
+	Hold string   `json:"hold"`
 }
 
 type FilePrefix struct {
@@ -33,16 +41,27 @@ type FileBinding struct {
 }
 
 type Config struct {
-	CandidateTimeout time.Duration
-	SequenceTimeout  time.Duration
-	SocketPath       string
-	AllowedUIDs      []uint32
-	Prefixes         []Prefix
+	CandidateTimeout  time.Duration
+	SequenceTimeout   time.Duration
+	SocketPath        string
+	AllowedUIDs       []uint32
+	Prefixes          []Prefix
+	ReservedModifiers []keycode.Logical
 }
+
+type OutputMode uint8
+
+const (
+	Action OutputMode = iota
+	Tap
+	Hold
+)
 
 type Prefix struct {
 	Keys     []keycode.Logical
 	Bindings []Binding
+	Mode     OutputMode
+	Target   uint16
 }
 
 type Binding struct {
@@ -92,8 +111,8 @@ func compile(raw File) (Config, error) {
 	if !filepath.IsAbs(cfg.SocketPath) {
 		return Config{}, fmt.Errorf("socket_path must be absolute")
 	}
-	if len(raw.Prefixes) == 0 {
-		return Config{}, fmt.Errorf("at least one prefix is required")
+	if len(raw.Prefixes) == 0 && len(raw.Remaps) == 0 {
+		return Config{}, fmt.Errorf("at least one prefix or remap is required")
 	}
 
 	prefixSeen := make(map[string]bool)
@@ -138,12 +157,64 @@ func compile(raw File) (Config, error) {
 		cfg.Prefixes = append(cfg.Prefixes, prefix)
 	}
 
+	for ri, remap := range raw.Remaps {
+		keys, err := parseChord(remap.Keys)
+		if err != nil {
+			return Config{}, fmt.Errorf("remap %d: %w", ri, err)
+		}
+		modifiers := 0
+		for _, key := range keys {
+			if keycode.IsLogicalModifier(key) {
+				modifiers++
+			}
+		}
+		if modifiers == 0 || modifiers == len(keys) {
+			return Config{}, fmt.Errorf("remap %d must contain a modifier and a non-modifier key", ri)
+		}
+		if (remap.Tap == "") == (remap.Hold == "") {
+			return Config{}, fmt.Errorf("remap %d must specify exactly one of tap or hold", ri)
+		}
+		mode, target := Tap, remap.Tap
+		if remap.Hold != "" {
+			mode, target = Hold, remap.Hold
+		}
+		tap, err := keycode.Parse(target)
+		if err != nil {
+			return Config{}, fmt.Errorf("remap %d target: %w", ri, err)
+		}
+		if tap == 0 || keycode.IsLogicalModifier(tap) {
+			return Config{}, fmt.Errorf("remap %d target must be a non-modifier key other than KEY_RESERVED", ri)
+		}
+		cfg.Prefixes = append(cfg.Prefixes, Prefix{Keys: keys, Mode: mode, Target: uint16(tap)})
+		sig := chordSignature(keys)
+		if prefixSeen[sig] {
+			return Config{}, fmt.Errorf("remap %d duplicates a source chord", ri)
+		}
+		prefixSeen[sig] = true
+	}
 	for i := range cfg.Prefixes {
 		for j := i + 1; j < len(cfg.Prefixes); j++ {
 			if subset(cfg.Prefixes[i].Keys, cfg.Prefixes[j].Keys) || subset(cfg.Prefixes[j].Keys, cfg.Prefixes[i].Keys) {
-				return Config{}, fmt.Errorf("prefixes %d and %d are ambiguous subsets", i, j)
+				return Config{}, fmt.Errorf("source chords %d and %d are ambiguous subsets (prefixes followed by remaps)", i, j)
 			}
 		}
+	}
+	for _, name := range raw.ReservedModifiers {
+		key, err := keycode.Parse(name)
+		if err != nil {
+			return Config{}, fmt.Errorf("reserved modifier: %w", err)
+		}
+		if !keycode.IsLogicalModifier(key) || slices.Contains(cfg.ReservedModifiers, key) {
+			return Config{}, fmt.Errorf("reserved modifier %q must be a distinct modifier", name)
+		}
+		used := false
+		for _, source := range cfg.Prefixes {
+			used = used || slices.Contains(source.Keys, key)
+		}
+		if !used {
+			return Config{}, fmt.Errorf("reserved modifier %q is not used by a source chord", name)
+		}
+		cfg.ReservedModifiers = append(cfg.ReservedModifiers, key)
 	}
 	return cfg, nil
 }
