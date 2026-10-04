@@ -71,7 +71,7 @@ func run(parent context.Context, cfg config.Config, logger *log.Logger) error {
 		return err
 	}
 	defer virtual.Close()
-	manager := linuxinput.NewManager(virtual, logger)
+	manager := linuxinput.NewManager(virtual, logger, cfg.AllowedDevices)
 
 	processor := engine.New(cfg)
 	forwarder := linuxinput.NewForwarder(virtual)

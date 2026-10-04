@@ -54,6 +54,9 @@ func TestDecodeEventsAcceptsEmptyAndMultipleRecords(t *testing.T) {
 }
 
 func TestGenericIoctlNumbers(t *testing.T) {
+	if got, want := ior(evdevBase, 0x02, unsafe.Sizeof(inputID{})), uintptr(0x80084502); got != want {
+		t.Fatalf("EVIOCGID = %#x, want %#x", got, want)
+	}
 	if got, want := iow(evdevBase, 0x90, unsafe.Sizeof(int32(0))), uintptr(0x40044590); got != want {
 		t.Fatalf("EVIOCGRAB = %#x, want %#x", got, want)
 	}

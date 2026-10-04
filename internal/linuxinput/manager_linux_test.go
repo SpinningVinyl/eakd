@@ -15,7 +15,40 @@ import (
 	"time"
 
 	"eak/internal/input"
+	"eak/internal/keycode"
 )
+
+func TestDeviceAllowlist(t *testing.T) {
+	m := NewManager(&VirtualKeyboard{name: "test", fd: -1}, log.New(stdio.Discard, "", 0), []string{"abcd:0123"})
+	macro := make([]byte, keyBitmapBytes)
+	macro[keycode.KeyA/8] |= 1 << (keycode.KeyA % 8)
+	if normal, err := classifyKeyboardCapabilities(macro, nil); err != nil || normal {
+		t.Fatalf("macro pad unexpectedly classified as a normal keyboard: %t, %v", normal, err)
+	}
+	for _, tc := range []struct {
+		name         string
+		id           inputID
+		capabilities []byte
+		want         bool
+	}{
+		{"macro pad", inputID{Vendor: 0xabcd, Product: 0x0123}, macro, true},
+		{"different vendor", inputID{Vendor: 0xabce, Product: 0x0123}, macro, false},
+		{"different product", inputID{Vendor: 0xabcd, Product: 0x0124}, macro, false},
+		{"no key capabilities", inputID{Vendor: 0xabcd, Product: 0x0123}, make([]byte, keyBitmapBytes), false},
+		{"nil capabilities", inputID{Vendor: 0xabcd, Product: 0x0123}, nil, false},
+		{"different bus and version", inputID{BusType: 3, Vendor: 0xabcd, Product: 0x0123, Version: 2}, macro, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := m.isAllowedDevice(tc.id, tc.capabilities); got != tc.want {
+				t.Fatalf("isAllowedDevice = %t, want %t", got, tc.want)
+			}
+		})
+	}
+	m.allowedDevices = nil
+	if m.isAllowedDevice(inputID{Vendor: 0xabcd, Product: 0x0123}, macro) {
+		t.Fatal("empty allowlist accepted a macro pad")
+	}
+}
 
 func TestScheduleRetryTracksLimitsAndNewGenerations(t *testing.T) {
 	state := newManagerTestState(context.Background(), make(chan input.Message, 1))
@@ -266,7 +299,7 @@ func TestWakeReadyRequiresCancellation(t *testing.T) {
 }
 
 func newManagerTestState(ctx context.Context, output chan<- input.Message) *managerState {
-	manager := NewManager(&VirtualKeyboard{name: "test", fd: -2}, log.New(stdio.Discard, "", 0))
+	manager := NewManager(&VirtualKeyboard{name: "test", fd: -2}, log.New(stdio.Discard, "", 0), nil)
 	return &managerState{
 		manager: manager, ctx: ctx, output: output, epfd: -1, monitorFD: -3,
 		wakeRead: -4, wakeWrite: -1,

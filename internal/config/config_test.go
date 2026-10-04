@@ -17,6 +17,7 @@ func TestLoadAndCompile(t *testing.T) {
 	path := filepath.Join(directory, "eakd.json")
 	data := []byte(`{
   "allowed_uids": [1000],
+  "allowed_devices": ["ABCD:0123"],
   "prefixes": [{
     "keys": ["LOGO", "T"],
     "bindings": [{"keys": ["1"], "action": "terminal.one"}]
@@ -31,6 +32,29 @@ func TestLoadAndCompile(t *testing.T) {
 	}
 	if len(cfg.Prefixes) != 1 || cfg.Prefixes[0].Bindings[0].Action != "terminal.one" {
 		t.Fatalf("unexpected compiled configuration: %#v", cfg)
+	}
+	if len(cfg.AllowedDevices) != 1 || cfg.AllowedDevices[0] != "abcd:0123" {
+		t.Fatalf("unexpected allowed devices: %v", cfg.AllowedDevices)
+	}
+}
+
+func TestCompileAllowedDevices(t *testing.T) {
+	for _, id := range []string{"", "123:5678", "12345:5678", "1234:567", "1234:56789", "1234-5678", "1234:xyz0", "+234:5678", " 1234:5678", "1234:5678:9"} {
+		t.Run(id, func(t *testing.T) {
+			_, err := compile(File{AllowedUIDs: []uint32{1000}, AllowedDevices: []string{id}})
+			if err == nil || !strings.Contains(err.Error(), "allowed_devices") {
+				t.Fatalf("compile returned %v, want an allowed_devices error", err)
+			}
+		})
+	}
+	for _, ids := range [][]string{nil, {}, {"0000:0000", "ffff:FFFF"}} {
+		cfg, err := compile(File{
+			AllowedUIDs: []uint32{1000}, AllowedDevices: ids,
+			Remaps: []FileRemap{{Keys: []string{"LOGO", "HOME"}, Tap: "INSERT"}},
+		})
+		if err != nil || len(cfg.AllowedDevices) != len(ids) {
+			t.Fatalf("compile(%v) returned devices=%v err=%v", ids, cfg.AllowedDevices, err)
+		}
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"time"
 
@@ -51,10 +52,11 @@ type physicalDevice struct {
 }
 
 type Manager struct {
-	virtual *VirtualKeyboard
-	logger  *log.Logger
-	ready   chan struct{}
-	locks   LockState
+	virtual        *VirtualKeyboard
+	logger         *log.Logger
+	ready          chan struct{}
+	locks          LockState
+	allowedDevices []string
 }
 
 type managerState struct {
@@ -81,8 +83,8 @@ type managerState struct {
 	nextCandidateCheck time.Time
 }
 
-func NewManager(virtual *VirtualKeyboard, logger *log.Logger) *Manager {
-	return &Manager{virtual: virtual, logger: logger, ready: make(chan struct{})}
+func NewManager(virtual *VirtualKeyboard, logger *log.Logger, allowedDevices []string) *Manager {
+	return &Manager{virtual: virtual, logger: logger, ready: make(chan struct{}), allowedDevices: slices.Clone(allowedDevices)}
 }
 
 // Ready is closed after the udev monitor is active and initial enumeration has
@@ -796,6 +798,13 @@ func (m *Manager) probeCandidate(path string, generation deviceGeneration, fd in
 	if err != nil {
 		return nil, err
 	}
+	if !isKeyboard && len(m.allowedDevices) != 0 {
+		id, err := deviceID(fd)
+		if err != nil {
+			return nil, fmt.Errorf("EVIOCGID: %w", err)
+		}
+		isKeyboard = m.isAllowedDevice(id, capabilities)
+	}
 	if !isKeyboard {
 		return nil, nil
 	}
@@ -808,6 +817,11 @@ func (m *Manager) probeCandidate(path string, generation deviceGeneration, fd in
 	}
 	closeOnError = false
 	return &physicalDevice{path: path, generation: generation, fd: fd, leds: leds}, nil
+}
+
+func (m *Manager) isAllowedDevice(id inputID, capabilities []byte) bool {
+	return slices.Contains(m.allowedDevices, fmt.Sprintf("%04x:%04x", id.Vendor, id.Product)) &&
+		slices.ContainsFunc(capabilities, func(bits byte) bool { return bits != 0 })
 }
 
 func classifyKeyboardCapabilities(capabilities []byte, queryErr error) (bool, error) {

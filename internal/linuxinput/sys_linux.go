@@ -140,6 +140,14 @@ func deviceName(fd int) (string, error) {
 	return string(buffer), nil
 }
 
+func deviceID(fd int) (inputID, error) {
+	var id inputID
+	if err := ioctl(fd, ior(evdevBase, 0x02, unsafe.Sizeof(id)), unsafe.Pointer(&id)); err != nil {
+		return inputID{}, err
+	}
+	return id, nil
+}
+
 func keyCapabilities(fd int) ([]byte, error) {
 	bits := make([]byte, keyBitmapBytes)
 	if err := ioctl(fd, eviocgbit(input.EVKey, uintptr(len(bits))), unsafe.Pointer(&bits[0])); err != nil {

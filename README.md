@@ -141,6 +141,11 @@ common named Linux keys, `KEY_KP*` names for numpad keys (also accepted
 without the `KEY_` prefix, for example `KP1` and `KPENTER`), and
 `CODE_<decimal Linux keycode>` are accepted.
 
+Macro pads that fail automatic keyboard or numpad detection can be added to
+the broker configuration with `"allowed_devices": ["1234:5678"]`. Each entry
+is a case-insensitive vendor:product ID. You can typically Find the device's
+IDs with `lsusb`.
+
 Every prefix must contain a modifier. Prefixes that are subsets of one another
 are rejected because they cannot be resolved without another timeout layer.
 The three lock keys may be used in broker sequences, in that case they do not

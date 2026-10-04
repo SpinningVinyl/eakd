@@ -147,7 +147,7 @@ func newFeedbackTestState(t *testing.T) (*managerState, int) {
 	}
 	t.Cleanup(func() { syscall.Close(pipe[0]) })
 	t.Cleanup(func() { syscall.Close(pipe[1]) })
-	m := NewManager(&VirtualKeyboard{name: "test", fd: pipe[0]}, log.New(stdio.Discard, "", 0))
+	m := NewManager(&VirtualKeyboard{name: "test", fd: pipe[0]}, log.New(stdio.Discard, "", 0), nil)
 	return &managerState{
 		manager:    m,
 		readBuffer: make([]byte, kernelEventSize*eventBufferSize),
@@ -208,7 +208,7 @@ func TestManagerWakePipeCancelsIndefiniteWait(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := NewManager(&VirtualKeyboard{name: "test", fd: -1}, log.New(stdio.Discard, "", 0))
+	m := NewManager(&VirtualKeyboard{name: "test", fd: -1}, log.New(stdio.Discard, "", 0), nil)
 	state := &managerState{
 		manager:        m,
 		ctx:            ctx,
@@ -291,7 +291,7 @@ func TestAcceptCandidateClosesDeviceWhenInitialKeyQueryFails(t *testing.T) {
 	if err := syscall.SetNonblock(pipe[0], true); err != nil {
 		t.Fatal(err)
 	}
-	m := NewManager(&VirtualKeyboard{name: "test", fd: -1}, log.New(stdio.Discard, "", 0))
+	m := NewManager(&VirtualKeyboard{name: "test", fd: -1}, log.New(stdio.Discard, "", 0), nil)
 	device := &physicalDevice{path: "/dev/input/event-test", fd: pipe[0]}
 	state := &managerState{
 		manager:    m,

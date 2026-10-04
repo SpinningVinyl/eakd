@@ -3,10 +3,12 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"eak/internal/action"
@@ -19,6 +21,7 @@ type File struct {
 	SequenceTimeout   string       `json:"sequence_timeout"`
 	SocketPath        string       `json:"socket_path"`
 	AllowedUIDs       []uint32     `json:"allowed_uids"`
+	AllowedDevices    []string     `json:"allowed_devices"`
 	Prefixes          []FilePrefix `json:"prefixes"`
 	Remaps            []FileRemap  `json:"remaps"`
 	ReservedModifiers []string     `json:"reserved_modifiers"`
@@ -45,6 +48,7 @@ type Config struct {
 	SequenceTimeout   time.Duration
 	SocketPath        string
 	AllowedUIDs       []uint32
+	AllowedDevices    []string
 	Prefixes          []Prefix
 	ReservedModifiers []keycode.Logical
 }
@@ -104,6 +108,15 @@ func compile(raw File) (Config, error) {
 	}
 	if len(cfg.AllowedUIDs) == 0 {
 		return Config{}, fmt.Errorf("allowed_uids must contain at least one eakc user")
+	}
+	for i, id := range raw.AllowedDevices {
+		if len(id) != 9 || id[4] != ':' {
+			return Config{}, fmt.Errorf("allowed_devices %d: expected four hexadecimal digits each for vendor:product", i)
+		}
+		if _, err := hex.DecodeString(id[:4] + id[5:]); err != nil {
+			return Config{}, fmt.Errorf("allowed_devices %d: invalid vendor:product %q: %w", i, id, err)
+		}
+		cfg.AllowedDevices = append(cfg.AllowedDevices, strings.ToLower(id))
 	}
 	if cfg.SocketPath == "" {
 		cfg.SocketPath = "/run/eak/eakd.sock"
