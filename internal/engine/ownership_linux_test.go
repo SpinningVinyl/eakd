@@ -5,6 +5,7 @@
 package engine
 
 import (
+	"fmt"
 	"math/rand"
 	"slices"
 	"testing"
@@ -381,6 +382,92 @@ func TestConsumedPrefixReleaseAfterBindingFailure(t *testing.T) {
 	r.key("kbd", keycode.KeyLeftMeta, 0)
 	r.key("kbd", keycode.KeyA, 0)
 	r.want(ev(keycode.KeyA, 1), ev(keycode.KeyA, 0))
+}
+
+func TestActionPrefixWithExtraModifierPassesThrough(t *testing.T) {
+	for _, chord := range []struct{ modifier, key uint16 }{
+		{keycode.KeyLeftShift, keycode.KeyT},
+		{keycode.KeyRightShift, keycode.KeyT},
+		{keycode.KeyLeftCtrl, keycode.KeyA},
+		{keycode.KeyRightCtrl, keycode.KeyA},
+	} {
+		for _, order := range []struct {
+			name                string
+			logoFirst, combined bool
+			device              string
+		}{
+			{"modifier first", false, false, "kbd"},
+			{"logo first", true, false, "kbd"},
+			{"combined modifier first", false, true, "kbd"},
+			{"combined logo first", true, true, "kbd"},
+			{"modifier on another keyboard", false, false, "other"},
+		} {
+			for _, reserved := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%d/%s/reserved=%t", chord.modifier, order.name, reserved), func(t *testing.T) {
+					cfg := testConfig()
+					cfg.Prefixes = append(cfg.Prefixes, config.Prefix{
+						Keys:     []keycode.Logical{keycode.LogicalLogo, keycode.Logical(keycode.KeyA)},
+						Bindings: cfg.Prefixes[0].Bindings,
+					})
+					if reserved {
+						cfg.ReservedModifiers = []keycode.Logical{keycode.LogicalLogo}
+					}
+					r := newRig(t, cfg)
+					codes := []uint16{chord.modifier, keycode.KeyLeftMeta, chord.key}
+					if order.logoFirst {
+						codes[0], codes[1] = codes[1], codes[0]
+					}
+					var want []input.Event
+					for _, code := range codes {
+						want = append(want, ev(code, 1))
+						if !order.combined {
+							device := "kbd"
+							if code == chord.modifier {
+								device = order.device
+							}
+							r.key(device, code, 1)
+						}
+					}
+					if order.combined {
+						r.apply(r.e.HandleFrame(input.Frame{Device: "kbd", Events: append(slices.Clone(want), input.Event{Type: input.EVSyn})}, r.now))
+					}
+					r.want(want...)
+					for i := len(codes) - 1; i >= 0; i-- {
+						device := "kbd"
+						if codes[i] == chord.modifier {
+							device = order.device
+						}
+						r.key(device, codes[i], 0)
+						r.want(ev(codes[i], 0))
+					}
+					if len(r.actions) != 0 || r.e.mode != modeIdle || len(r.e.journal) != 0 || len(r.w.down) != 0 {
+						t.Fatal("nonmatching chord left actions, pending input, or held keys")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestRemapStillInheritsForwardedModifier(t *testing.T) {
+	for _, mode := range []config.OutputMode{config.Tap, config.Hold} {
+		t.Run(fmt.Sprint(mode), func(t *testing.T) {
+			cfg := testConfig()
+			cfg.Prefixes = append(cfg.Prefixes, config.Prefix{
+				Keys: []keycode.Logical{keycode.LogicalLogo, keycode.Logical(keycode.KeyHome)},
+				Mode: mode, Target: keycode.KeyInsert,
+			})
+			r := newRig(t, cfg)
+			r.key("kbd", keycode.KeyLeftShift, 1)
+			r.key("kbd", keycode.KeyLeftMeta, 1)
+			r.key("kbd", keycode.KeyHome, 1)
+			r.key("kbd", keycode.KeyHome, 0)
+			r.want(ev(keycode.KeyLeftShift, 1), ev(keycode.KeyInsert, 1), ev(keycode.KeyInsert, 0))
+			r.key("kbd", keycode.KeyLeftMeta, 0)
+			r.key("kbd", keycode.KeyLeftShift, 0)
+			r.want(ev(keycode.KeyLeftShift, 0))
+		})
+	}
 }
 
 func TestReservedMultiModifierAndModifierOnlyPrefix(t *testing.T) {
