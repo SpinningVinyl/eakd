@@ -36,6 +36,18 @@ func (e *Engine) startSource(p *press, now time.Time) bool {
 		if !slices.Contains(source.Keys, p.logical) {
 			continue
 		}
+		if source.Mode == config.Action {
+			extraModifier := false
+			for key := range e.logicalCount {
+				if keycode.IsLogicalModifier(key) && !slices.Contains(source.Keys, key) {
+					extraModifier = true
+					break
+				}
+			}
+			if extraModifier {
+				continue
+			}
+		}
 		if len(borrowed) != 0 {
 			if source.Mode == config.Action {
 				continue
